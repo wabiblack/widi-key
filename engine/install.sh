@@ -103,8 +103,12 @@ cat > "$PLIST" <<EOF
 </plist>
 EOF
 
-launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+# Zaten yüklüyse yeniden başlat, değilse yükle
+if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+  launchctl kickstart -k "gui/$(id -u)/$LABEL"
+else
+  launchctl bootstrap "gui/$(id -u)" "$PLIST"
+fi
 
 for _ in $(seq 1 30); do
   if curl -fs "http://127.0.0.1:7865/health" >/dev/null 2>&1; then
