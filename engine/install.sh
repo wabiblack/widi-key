@@ -47,6 +47,9 @@ PY="$ENV_DIR/bin/python"
 say "Kütüphaneler kuruluyor (birkaç dakika sürebilir)"
 "$PY" -m pip install -q --upgrade pip
 "$PY" -m pip install -q stable-audio-tools sentencepiece sacremoses "huggingface_hub>=0.23"
+# stable-audio-tools numpy 1.x kullanıyor; PyWavelets'in yeni sürümleri numpy 2 ile derlendiği için uyumlu sürümü sabitle
+"$PY" -m pip install -q "PyWavelets<1.6"
+"$PY" -c "import numpy, pywt; print('numpy', numpy.__version__, '· pywt', pywt.__version__)"
 
 # 3) Motor dosyası ------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
