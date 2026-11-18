@@ -1,31 +1,48 @@
 # widi-key
 
-Yazdığın tariften yapay zekayla ses üreten ve o sesi kendi klavyesinden çalmanı sağlayan Logic Pro (Audio Unit) enstrümanı.
+*made in wabi*
 
-## Kurulum
+Türkçe tarif ettiğin sesi yapay zekayla üreten ve kendi klavyesinden çalmanı sağlayan Logic Pro (Audio Unit) enstrümanı.
 
-1. Bu sayfanın sağındaki **Releases** bölümünden en son sürümdeki `widi-key-AU.zip` dosyasını indir.
-2. Zip'i aç. Çıkan `widi-key.component` dosyasını şu klasöre taşı:
-   `~/Library/Audio/Plug-Ins/Components`
-   (Finder'da **Git → Klasöre Git…** menüsüne bu yolu yapıştırabilirsin.)
-3. Plugin imzasız olduğu için macOS ilk açılışta engelleyebilir. Terminal'i açıp şunu yapıştır:
+## Plugin kurulumu
+
+1. **Releases** bölümünden en son `widi-key-AU.zip` dosyasını indir ve aç.
+2. Finder'da **Cmd+Shift+G**'ye bas, `~/Library/Audio/Plug-Ins/Components` yaz. Çıkan `widi-key.component` dosyasını bu klasöre sürükle (eskisi varsa üzerine yaz).
+3. Terminal'de şunu çalıştır:
    ```
    xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/widi-key.component
    ```
-4. Logic'i aç. Yeni bir Software Instrument kanalı ekle ve **AU Instruments → wabiblack → widi-key**'i seç.
-   Plugin görünmezse Logic'te **Ayarlar → Plug-in Yöneticisi**'nden widi-key için yeniden tarama yap.
+4. Logic'te **AU Instruments → wabiblack → widi-key**'i seç.
+
+## Yerel motor kurulumu (internetsiz, limitsiz)
+
+Yerel motor Mac'inde arka planda çalışır. İki işi var: Türkçe tarifini İngilizceye çevirmek ve Stable Audio Open Small ile sesi üretmek.
+
+1. Önce [stable-audio-open-small](https://huggingface.co/stabilityai/stable-audio-open-small) sayfasında giriş yap ve koşulları kabul et.
+2. [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) adresinden **Read** yetkili bir token oluştur.
+3. Terminal'e şunu yapıştır:
+   ```
+   curl -fsSL https://raw.githubusercontent.com/wabiblack/widi-key/main/engine/install.sh | bash
+   ```
+   Kurulum token'ı soracak. Modeller tek seferlik iner, toplam birkaç GB tutabilir.
+
+Kurulum bitince plugin'deki **Yerel** düğmesinin yanındaki nokta yeşil yanar. Motor Mac her açıldığında kendiliğinden başlar.
+Kaldırmak için: `curl -fsSL https://raw.githubusercontent.com/wabiblack/widi-key/main/engine/uninstall.sh | bash`
 
 ## Kullanım
 
-1. **Ayarlar**'a tıkla ve ElevenLabs API anahtarını yapıştır. Ücretsiz planla ayda yaklaşık 50 ses üretebilirsin. Ücretsiz planda üretilen sesler sadece kişisel kullanım içindir.
-2. Ortadaki kutuya sesi tarif et. İngilizce tarifler daha iyi sonuç veriyor, örneğin `warm dusty music box`. Sonra **Üret**'e bas.
-3. Ses birkaç saniyede gelir ve klavyenin tüm tuşlarına perdeli olarak dağıtılır. Kök nota C3.
-4. Attack, Decay, Sustain, Release, Filtre ve Reverb düğmeleriyle sesi şekillendirebilirsin. **Süre** düğmesi bir sonraki üretilecek sesin uzunluğunu belirler.
+- Tarifi Türkçe yaz, örneğin `tozlu bir müzik kutusu, tek nota`. **Üret**'e basınca tarif arka planda İngilizceye çevrilir. Çeviri sende görünmez, model daha doğru tarif almış olur. Bulut modunda bu çeviri için de yerel motorun açık olması gerekir.
+- Her üretimde 1–4 varyasyon gelir (A/B/C/D). Beğendiğine tıkla, klavyeye o yayılır.
+- **Seed kilidi** açıkken her üretim yepyeni sonuçlar verir. Kilitliyken aynı sesin üzerinde kalite, süre ve tarif değiştirerek oynayabilirsin.
+- **Kalite** (adım sayısı) yükseldikçe ses temizleşir ama üretim yavaşlar. **Tarife bağlılık** yükseldikçe sonuç tarife daha sıkı uyar.
+- Zarf (Attack/Decay/Sustain/Release), filtre ve reverb notaya basınca anında etkiler, yeniden üretmek gerekmez.
+- Pencereyi sağ alt köşesinden büyütüp küçültebilirsin.
+- Bulut modu ElevenLabs API anahtarı ister ve her varyasyon ayrı kredi harcar.
 
-Üretilen ses Logic projesiyle birlikte kaydedilir. Projeyi tekrar açtığında ses yerinde durur.
+Üretilen tüm varyasyonlar Logic projesiyle birlikte kaydedilir.
 
 ## Derleme
 
-`main` dalına yapılan her push'ta GitHub Actions, Plugin'i bulutta bir Mac üzerinde derler ve yeni bir Release yayınlar.
+`main` dalına yapılan her push'ta GitHub Actions plugin'i bulutta bir Mac üzerinde derler ve yeni bir Release yayınlar.
 
-Altyapı olarak [JUCE](https://juce.com) kullanılıyor.
+Altyapı: [JUCE](https://juce.com), [Stable Audio Open Small](https://huggingface.co/stabilityai/stable-audio-open-small), [OPUS-MT tr-en](https://huggingface.co/Helsinki-NLP/opus-mt-tc-big-tr-en). Yazı tipi: Instrument Serif (SIL Open Font License).

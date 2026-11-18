@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""widi-key yerel motor.
+
+Mac üzerinde arka planda çalışır ve plugin'e iki hizmet verir:
+  * /translate : Türkçe tarifi İngilizceye çevirir (kullanıcı görmez)
+  * /generate  : Stable Audio Open Small ile tarife göre ses üretir
+
+Sadece 127.0.0.1 üzerinden dinler; dışarıdan erişilemez.
+"""
+
+import base64
+import io
+import json
+import os
+import re
+import sys
+import threading
+import traceback
+import wave
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
+PORT = int(os.environ.get("WIDIKEY_PORT", "7865"))
+AUDIO_MODEL = "stabilityai/stable-audio-open-small"
+TRANSLATE_MODEL = "Helsinki-NLP/opus-mt-tc-big-tr-en"
+MAX_SECONDS = 11.0
+
+_work_lock = threading.Lock()
+_load_lock = threading.Lock()
+_state = {"audio": None, "translator": None, "device": None, "error": None}
+
+
+# --------------------------------------------------------------------------- #
+# Modeller
+# --------------------------------------------------------------------------- #
+def _device():
+    import torch
+
+    return "mps" if torch.backends.mps.is_available() else "cpu"
+
+
+def load_audio():
+    with _load_lock:
+        if _state["audio"] is None:
+            from stable_audio_tools import get_pretrained_model
+
+            model, config = get_pretrained_model(AUDIO_MODEL)
+            dev = _device()
+            model = model.to(dev).eval()
+            _state["audio"] = (model, config)
+            _state["device"] = dev
+    return _state["audio"]
+
+
+def load_translator():
+    with _load_lock:
+        if _state["translator"] is None:
+            from transformers import MarianMTModel, MarianTokenizer
+
+            tokenizer = MarianTokenizer.from_pretrained(TRANSLATE_MODEL)
+            model = MarianMTModel.from_pretrained(TRANSLATE_MODEL).eval()
+            _state["translator"] = (tokenizer, model)
+    return _state["translator"]
+
+
+# --------------------------------------------------------------------------- #
+# Çeviri
+# --------------------------------------------------------------------------- #
+_TR_CHARS = re.compile(r"[çğıöşüÇĞİÖŞÜ]")
+_TR_WORDS = {
+    "bir", "ve", "ile", "gibi", "ses", "sesi", "nota", "tek", "sicak", "eski", "tozlu",
+    "yumusak", "sert", "derin", "parlak", "karanlik", "uzun", "kisa", "davul", "piyano",
+    "gitar", "bas", "can", "ruzgar", "su", "yagmur", "kutusu", "muzik", "icin", "cok",
+    "az", "hafif", "agir", "metal", "cam", "tahta", "zil", "dalga", "yankili", "boguk",
+    "tiz", "kalin", "ince", "vurus", "efekt", "korkunc", "neseli", "huzunlu", "uzay",
+}
+
+
+def looks_turkish(text):
+    if _TR_CHARS.search(text):
+        return True
+    words = re.findall(r"[a-z]+", text.lower())
+    return any(w in _TR_WORDS for w in words)
+
+
+def translate(text):
+    text = (text or "").strip()
+    if not text or not looks_turkish(text):
+        return text
+
+    import torch
+
+    tokenizer, model = load_translator()
+    with torch.no_grad():
+        batch = tokenizer([text], return_tensors="pt", padding=True, truncation=True, max_length=256)
+        output = model.generate(**batch, num_beams=5, max_new_tokens=128)
+    return tokenizer.decode(output[0], skip_special_tokens=True).strip()
+
+
+# --------------------------------------------------------------------------- #
+# Ses üretimi
+# --------------------------------------------------------------------------- #
+def _trim_and_normalize(audio, sample_rate):
+    import torch
+
+    peak = audio.abs().max().item()
+    if peak > 0:
+        audio = audio / peak * 0.95
+
+    # Baştaki sessizliği kırp ki tuşa basınca ses hemen gelsin
+    envelope = audio.abs().max(dim=0).values
+    loud = (envelope > 0.02).nonzero()
+    if len(loud):
+        start = max(0, int(loud[0]) - int(0.003 * sample_rate))
+        audio = audio[:, start:]
+
+    # Sonda tık sesi olmasın diye kısa bir fade
+    fade = min(int(0.02 * sample_rate), audio.shape[1])
+    if fade > 0:
+        audio[:, -fade:] *= torch.linspace(1.0, 0.0, fade)
+    return audio
+
+
+def _to_wav(audio, sample_rate):
+    import torch
+
+    pcm = (audio.clamp(-1, 1) * 32767).to(torch.int16).t().contiguous().numpy().tobytes()
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as w:
+        w.setnchannels(audio.shape[0])
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(pcm)
+    return buffer.getvalue()
+
+
+def generate(request):
+    import torch
+    from einops import rearrange
+    from stable_audio_tools.inference.generation import generate_diffusion_cond
+
+    model, config = load_audio()
+    sample_rate = config["sample_rate"]
+    sample_size = config["sample_size"]
+
+    seconds = max(0.5, min(MAX_SECONDS, float(request.get("seconds", 3.0))))
+    steps = max(4, min(50, int(request.get("steps", 8))))
+    cfg_scale = max(0.5, min(7.0, float(request.get("cfg", 1.0))))
+    seeds = [int(s) % 4294967000 for s in request.get("seeds", [])][:4] or [12345]
+
+    prompt_en = translate(request.get("prompt", ""))
+    full_prompt = prompt_en + request.get("suffix", "")
+
+    clips = []
+    for seed in seeds:
+        conditioning = [{"prompt": full_prompt, "seconds_total": seconds}]
+        with torch.no_grad():
+            output = generate_diffusion_cond(
+                model,
+                steps=steps,
+                cfg_scale=cfg_scale,
+                conditioning=conditioning,
+                sample_size=sample_size,
+                sampler_type="pingpong",
+                device=_state["device"],
+                seed=seed,
+            )
+        audio = rearrange(output, "b d n -> d (b n)").to(torch.float32).cpu()
+        audio = audio[:, : int(seconds * sample_rate)]
+        audio = _trim_and_normalize(audio, sample_rate)
+        clips.append(base64.b64encode(_to_wav(audio, sample_rate)).decode("ascii"))
+
+    return {"audio": clips, "seeds": seeds, "prompt_en": prompt_en}
+
+
+# --------------------------------------------------------------------------- #
+# HTTP
+# --------------------------------------------------------------------------- #
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def _send(self, code, payload):
+        data = json.dumps(payload).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path.startswith("/health"):
+            self._send(200, {
+                "ok": True,
+                "device": _state["device"],
+                "audio_loaded": _state["audio"] is not None,
+                "translator_loaded": _state["translator"] is not None,
+                "error": _state["error"],
+            })
+        else:
+            self._send(404, {"error": "not found"})
+
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            request = json.loads(self.rfile.read(length) or b"{}")
+
+            if self.path.startswith("/translate"):
+                with _work_lock:
+                    self._send(200, {"text": translate(request.get("text", ""))})
+            elif self.path.startswith("/generate"):
+                with _work_lock:
+                    self._send(200, generate(request))
+            else:
+                self._send(404, {"error": "not found"})
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            self._send(500, {"error": str(exc)})
+
+
+def _warm_up():
+    try:
+        load_translator()
+        load_audio()
+        print(f"widi-key motoru hazır ({_state['device']})", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        _state["error"] = str(exc)
+        traceback.print_exc()
+
+
+def main():
+    if "--download" in sys.argv:
+        print("Modeller indiriliyor (tek seferlik)...", flush=True)
+        load_translator()
+        print("  çeviri modeli tamam", flush=True)
+        load_audio()
+        print("  ses modeli tamam", flush=True)
+        print("Test çevirisi:", translate("tozlu bir müzik kutusu, tek nota"), flush=True)
+        return
+
+    threading.Thread(target=_warm_up, daemon=True).start()
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    print(f"widi-key motoru 127.0.0.1:{PORT} adresinde dinliyor", flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

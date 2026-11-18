@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(WidiKey VERSION 0.1.0)
+project(WidiKey VERSION 0.2.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,6 +27,11 @@ juce_add_plugin(WidiKey
     AU_MAIN_TYPE kAudioUnitType_MusicDevice
     FORMATS AU Standalone)
 
+juce_add_binary_data(WidiKeyData
+    HEADER_NAME BinaryData.h
+    NAMESPACE BinaryData
+    SOURCES Resources/InstrumentSerif-Italic.ttf)
+
 target_sources(WidiKey PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp)
@@ -39,6 +44,7 @@ target_compile_definitions(WidiKey PUBLIC
 
 target_link_libraries(WidiKey
     PRIVATE
+        WidiKeyData
         juce::juce_audio_utils
         juce::juce_dsp
     PUBLIC

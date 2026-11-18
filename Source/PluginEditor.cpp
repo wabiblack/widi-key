@@ -1,22 +1,33 @@
 #include "PluginEditor.h"
 #include "Common.h"
+#include "BinaryData.h"
 
 using widi::tr;
+using widi::uiFont;
+using widi::monoFont;
 namespace col = widi::col;
 
 namespace
 {
-    juce::Font font (float size, bool bold = false)
+    void styleLabel (juce::Label& label, juce::Font font, juce::Colour colour)
     {
-        return juce::Font (juce::FontOptions (size).withStyle (bold ? "Bold" : "Regular"));
-    }
-
-    void styleLabel (juce::Label& label, float size, juce::Colour colour, bool bold = false)
-    {
-        label.setFont (font (size, bold));
+        label.setFont (font);
         label.setColour (juce::Label::textColourId, colour);
         label.setBorderSize ({});
         label.setInterceptsMouseClicks (false, false);
+    }
+
+    void drawWell (juce::Graphics& g, juce::Rectangle<float> r, juce::Colour fill, float radius = 6.0f)
+    {
+        g.setColour (fill);
+        g.fillRoundedRectangle (r, radius);
+        g.setColour (col::line);
+        g.drawRoundedRectangle (r.reduced (0.5f), radius, 1.0f);
+    }
+
+    juce::String noteSafeText (const juce::String& s, int maxChars)
+    {
+        return s.length() > maxChars ? s.substring (0, maxChars - 1) + juce::String::fromUTF8 ("…") : s;
     }
 }
 
@@ -24,32 +35,35 @@ namespace
 WidiLookAndFeel::WidiLookAndFeel()
 {
     setColour (juce::ResizableWindow::backgroundColourId, col::bg);
-    setColour (juce::TextButton::buttonColourId, col::chip);
+    setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
     setColour (juce::TextButton::buttonOnColourId, col::segOn);
-    setColour (juce::TextButton::textColourOffId, col::text);
+    setColour (juce::TextButton::textColourOffId, col::dim);
     setColour (juce::TextButton::textColourOnId, col::text);
-    setColour (juce::ComboBox::outlineColourId, col::border);
     setColour (juce::AlertWindow::backgroundColourId, col::panel);
     setColour (juce::AlertWindow::textColourId, col::text);
-    setColour (juce::AlertWindow::outlineColourId, col::border);
-    setColour (juce::TextEditor::backgroundColourId, col::field);
+    setColour (juce::AlertWindow::outlineColourId, col::line);
+    setColour (juce::TextEditor::backgroundColourId, col::panel);
     setColour (juce::TextEditor::textColourId, col::text);
-    setColour (juce::TextEditor::outlineColourId, col::border);
+    setColour (juce::TextEditor::outlineColourId, col::fieldLine);
     setColour (juce::TextEditor::focusedOutlineColourId, col::accent);
-    setColour (juce::TooltipWindow::backgroundColourId, col::chip);
+    setColour (juce::TextEditor::highlightColourId, col::accent.withAlpha (0.3f));
+    setColour (juce::CaretComponent::caretColourId, col::accent);
+    setColour (juce::TooltipWindow::backgroundColourId, col::panel);
     setColour (juce::TooltipWindow::textColourId, col::text);
-    setColour (juce::TooltipWindow::outlineColourId, col::border);
+    setColour (juce::TooltipWindow::outlineColourId, col::line);
+    setColour (juce::Slider::textBoxTextColourId, col::text);
+    setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
 }
 
 void WidiLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
                                         float sliderPos, float startAngle, float endAngle, juce::Slider&)
 {
-    const auto bounds = juce::Rectangle<float> ((float) x, (float) y, (float) width, (float) height).reduced (3.0f);
+    const auto bounds = juce::Rectangle<float> ((float) x, (float) y, (float) width, (float) height);
     const auto size   = juce::jmin (bounds.getWidth(), bounds.getHeight());
     const auto area   = bounds.withSizeKeepingCentre (size, size);
-    const auto radius = size * 0.5f - 3.0f;
+    const auto radius = size * 0.5f - 2.0f;
     const auto centre = area.getCentre();
-    const juce::PathStrokeType stroke (4.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
+    const juce::PathStrokeType stroke (2.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
 
     juce::Path track;
     track.addCentredArc (centre.x, centre.y, radius, radius, 0.0f, startAngle, endAngle, true);
@@ -63,18 +77,32 @@ void WidiLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wid
     g.strokePath (value, stroke);
 
     g.setColour (col::knobCap);
-    g.fillEllipse (area.reduced (size * 0.27f));
+    g.fillEllipse (area.reduced (size * 0.28f));
 
     g.setColour (col::text);
-    g.drawLine ({ centre.getPointOnCircumference (radius * 0.08f, angle),
-                  centre.getPointOnCircumference (radius * 0.42f, angle) }, 2.0f);
+    g.drawLine ({ centre.getPointOnCircumference (radius * 0.1f, angle),
+                  centre.getPointOnCircumference (radius * 0.42f, angle) }, 1.5f);
+}
+
+void WidiLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
+                                        float sliderPos, float, float, juce::Slider::SliderStyle, juce::Slider&)
+{
+    const auto track = juce::Rectangle<float> ((float) x, (float) y + (float) height * 0.5f - 2.0f, (float) width, 4.0f);
+    g.setColour (col::line);
+    g.fillRoundedRectangle (track, 2.0f);
+
+    g.setColour (col::accent);
+    g.fillRoundedRectangle (track.withRight (juce::jmax (track.getX() + 2.0f, sliderPos)), 2.0f);
+
+    g.setColour (col::text);
+    g.fillEllipse (juce::Rectangle<float> (9.0f, 9.0f).withCentre ({ sliderPos, track.getCentreY() }));
 }
 
 void WidiLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& button, const juce::Colour& backgroundColour,
                                             bool highlighted, bool down)
 {
     auto bounds = button.getLocalBounds().toFloat().reduced (0.5f);
-    const float radius = (float) button.getProperties().getWithDefault ("radius", 10.0f);
+    const float radius = (float) button.getProperties().getWithDefault ("radius", 5.0f);
 
     auto base = backgroundColour;
 
@@ -83,14 +111,15 @@ void WidiLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& but
     else if (down)
         base = base.darker (0.15f);
     else if (highlighted)
-        base = base.brighter (0.08f);
+        base = base.isTransparent() ? col::line.withAlpha (0.5f) : base.brighter (0.08f);
 
     g.setColour (base);
     g.fillRoundedRectangle (bounds, radius);
 
     if ((bool) button.getProperties().getWithDefault ("outline", false))
     {
-        g.setColour (col::border.brighter (0.15f));
+        const bool lit = button.getToggleState() && (bool) button.getProperties().getWithDefault ("accentWhenOn", false);
+        g.setColour (lit ? col::accent : col::line);
         g.drawRoundedRectangle (bounds, radius, 1.0f);
     }
 }
@@ -98,64 +127,245 @@ void WidiLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& but
 juce::Font WidiLookAndFeel::getTextButtonFont (juce::TextButton& button, int buttonHeight)
 {
     const bool bold = (bool) button.getProperties().getWithDefault ("bold", false);
-    return font (juce::jmin (15.0f, (float) buttonHeight * 0.45f), bold);
+    return uiFont (juce::jmin (12.0f, (float) buttonHeight * 0.5f), bold);
 }
 
 //==============================================================================
-void WaveformView::paint (juce::Graphics& g)
+void WaveView::paint (juce::Graphics& g)
 {
     const auto bounds = getLocalBounds().toFloat();
-    g.setColour (col::field);
-    g.fillRoundedRectangle (bounds, 10.0f);
+    drawWell (g, bounds, col::well);
+
+    g.setColour (juce::Colour (0xff1a1c21));
+    g.fillRect (bounds.getX(), bounds.getCentreY(), bounds.getWidth(), 1.0f);
+
+    g.setFont (uiFont (10.0f));
+    g.setColour (col::dim);
+    g.drawText (tr ("SEÇİLİ SES · klavyeye yayıldı"), getLocalBounds().reduced (10, 6).removeFromTop (12), juce::Justification::topLeft);
+
+    g.setColour (col::envelope);
+    g.drawText (tr ("Zarf"), getLocalBounds().reduced (10, 6).removeFromTop (12), juce::Justification::topRight);
+    g.fillRect ((float) getWidth() - 46.0f, 12.0f, 10.0f, 2.0f);
+
+    const auto inner = bounds.reduced (10.0f, 22.0f).withTrimmedBottom (-12.0f);
 
     if (peaks.empty())
     {
         g.setColour (col::dim);
-        g.setFont (font (13.0f));
-        g.drawText (tr ("Henüz ses yok. Yukarıya bir tarif yaz ve Üret'e bas."), getLocalBounds(), juce::Justification::centred);
+        g.setFont (uiFont (12.0f));
+        g.drawText (tr ("Henüz ses yok · yukarıya Türkçe bir tarif yaz ve Üret'e bas"), getLocalBounds(), juce::Justification::centred);
         return;
     }
 
-    const auto inner = bounds.reduced (10.0f, 8.0f);
     const auto barWidth = inner.getWidth() / (float) peaks.size();
-    g.setColour (col::accent.withAlpha (busy ? 0.25f : 1.0f));
+    g.setColour (col::accent.withAlpha (busy ? 0.2f : 0.85f));
 
     for (size_t i = 0; i < peaks.size(); ++i)
     {
         const float h = juce::jmax (2.0f, peaks[i] * inner.getHeight());
-        const float x = inner.getX() + (float) i * barWidth;
-        g.fillRoundedRectangle (x + 0.5f, inner.getCentreY() - h * 0.5f, juce::jmax (1.0f, barWidth - 1.5f), h, 1.0f);
+        g.fillRoundedRectangle (inner.getX() + (float) i * barWidth, inner.getCentreY() - h * 0.5f,
+                                juce::jmax (1.0f, barWidth - 1.0f), h, 1.0f);
+    }
+
+    // Zarf çizgisi (ADSR)
+    const float a = apvts.getRawParameterValue ("attack")->load();
+    const float d = apvts.getRawParameterValue ("decay")->load();
+    const float s = apvts.getRawParameterValue ("sustain")->load();
+    const float r = apvts.getRawParameterValue ("release")->load();
+    const float total = (float) juce::jmax (seconds, (double) (a + d + r), 0.1);
+
+    auto xAt = [&] (float t) { return inner.getX() + inner.getWidth() * juce::jlimit (0.0f, 1.0f, t / total); };
+    const float top = inner.getY();
+    const float bottom = inner.getBottom();
+    const float sustainY = bottom - s * (bottom - top);
+    const float releaseStart = juce::jmax (a + d, total - r);
+
+    juce::Path env;
+    env.startNewSubPath (xAt (0.0f), bottom);
+    env.lineTo (xAt (a), top);
+    env.lineTo (xAt (a + d), sustainY);
+    env.lineTo (xAt (releaseStart), sustainY);
+    env.lineTo (xAt (total), bottom);
+    g.setColour (col::envelope);
+    g.strokePath (env, juce::PathStrokeType (1.5f));
+}
+
+//==============================================================================
+void VariationTile::setData (int newIndex, const std::vector<float>& peaks, int newSeed, bool isSelected, bool isAvailable, bool isBusy)
+{
+    index = newIndex;
+    seed = newSeed;
+    selected = isSelected;
+    available = isAvailable;
+    busy = isBusy;
+    mini.assign (28, 0.0f);
+
+    if (! peaks.empty())
+        for (size_t i = 0; i < mini.size(); ++i)
+        {
+            const size_t start = i * peaks.size() / mini.size();
+            const size_t end = juce::jmax (start + 1, (i + 1) * peaks.size() / mini.size());
+
+            for (size_t j = start; j < end && j < peaks.size(); ++j)
+                mini[i] = juce::jmax (mini[i], peaks[j]);
+        }
+
+    setMouseCursor (available ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+    repaint();
+}
+
+void VariationTile::paint (juce::Graphics& g)
+{
+    const auto bounds = getLocalBounds().toFloat().reduced (0.5f);
+    g.setColour (selected ? col::panel : col::tile);
+    g.fillRoundedRectangle (bounds, 6.0f);
+    g.setColour (selected ? col::accent : col::line);
+    g.drawRoundedRectangle (bounds, 6.0f, 1.0f);
+
+    auto r = getLocalBounds().reduced (8, 6);
+    auto top = r.removeFromTop (12);
+    g.setFont (monoFont (10.0f));
+    g.setColour (selected ? col::accent : (available ? col::soft : col::faint));
+    g.drawText ("VAR " + juce::String::charToString ((juce::juce_wchar) ('A' + index)), top, juce::Justification::centredLeft);
+
+    g.setColour (col::dim);
+    g.setFont (monoFont (9.0f));
+    g.drawText (! available ? juce::String ("-") : (seed >= 0 ? "#" + juce::String (seed) : tr ("bulut")),
+                top, juce::Justification::centredRight);
+
+    r.removeFromTop (4);
+    const float w = (float) r.getWidth() / (float) mini.size();
+    g.setColour ((selected ? col::accent : col::idleBar).withAlpha (busy ? 0.3f : 1.0f));
+
+    for (size_t i = 0; i < mini.size(); ++i)
+    {
+        const float h = available ? juce::jmax (2.0f, mini[i] * (float) r.getHeight()) : 2.0f;
+        g.fillRect ((float) r.getX() + (float) i * w, (float) r.getCentreY() - h * 0.5f, juce::jmax (1.0f, w - 1.0f), h);
     }
 }
 
 //==============================================================================
-WidiKeyEditor::WidiKeyEditor (WidiKeyProcessor& p)
-    : AudioProcessorEditor (p),
-      proc (p),
+void LcdDisplay::setText (const juce::String& left, const juce::String& right, bool isError)
+{
+    if (left == leftText && right == rightText && isError == error)
+        return;
+
+    leftText = left;
+    rightText = right;
+    error = isError;
+    repaint();
+}
+
+void LcdDisplay::paint (juce::Graphics& g)
+{
+    drawWell (g, getLocalBounds().toFloat(), col::well, 5.0f);
+
+    auto r = getLocalBounds().reduced (10, 0);
+    g.setFont (monoFont (11.0f));
+
+    const int rightWidth = rightText.isEmpty() ? 0 : juce::jmin (r.getWidth() / 2, (int) juce::GlyphArrangement::getStringWidth (monoFont (11.0f), rightText) + 4);
+    g.setColour (col::dim);
+    g.drawText (rightText, r.removeFromRight (rightWidth), juce::Justification::centredRight);
+
+    g.setColour (error ? col::error : col::accent);
+    g.drawText (leftText, r.withTrimmedRight (8), juce::Justification::centredLeft, true);
+}
+
+//==============================================================================
+ParamRow::ParamRow (juce::AudioProcessorValueTreeState& state, const juce::String& paramId, const juce::String& n, const juce::String& h)
+    : attachment (state, paramId, slider), name (n), hint (h)
+{
+    slider.setSliderStyle (juce::Slider::LinearHorizontal);
+    slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    slider.onValueChange = [this] { repaint(); };
+    addAndMakeVisible (slider);
+}
+
+void ParamRow::paint (juce::Graphics& g)
+{
+    auto top = getLocalBounds().removeFromTop (13);
+    const auto value = slider.getTextFromValue (slider.getValue());
+
+    g.setFont (monoFont (11.0f));
+    g.setColour (col::text);
+    g.drawText (value, top, juce::Justification::centredRight);
+
+    g.setFont (uiFont (11.0f));
+    g.setColour (col::soft);
+    const int nameWidth = (int) juce::GlyphArrangement::getStringWidth (uiFont (11.0f), name) + 1;
+    g.drawText (name, top.removeFromLeft (nameWidth), juce::Justification::centredLeft);
+
+    g.setColour (col::faint);
+    g.drawText (juce::String::fromUTF8 (" · ") + hint, top.withTrimmedRight (50), juce::Justification::centredLeft, true);
+}
+
+void ParamRow::resized()
+{
+    slider.setBounds (getLocalBounds().withTrimmedTop (15).withHeight (12).expanded (5, 0));
+}
+
+//==============================================================================
+Knob::Knob (juce::AudioProcessorValueTreeState& state, const juce::String& paramId, const juce::String& n)
+    : attachment (state, paramId, slider), name (n)
+{
+    slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    slider.onValueChange = [this] { repaint(); };
+    slider.setPopupDisplayEnabled (true, false, nullptr);
+    addAndMakeVisible (slider);
+}
+
+void Knob::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().withTrimmedLeft (36);
+    g.setFont (uiFont (10.0f));
+    g.setColour (col::soft);
+    g.drawText (name, r.removeFromTop (getHeight() / 2), juce::Justification::bottomLeft);
+
+    g.setFont (monoFont (10.0f));
+    g.setColour (col::text);
+    g.drawText (slider.getTextFromValue (slider.getValue()), r, juce::Justification::topLeft);
+}
+
+void Knob::resized()
+{
+    slider.setBounds (getLocalBounds().removeFromLeft (30).withSizeKeepingCentre (30, 30));
+}
+
+//==============================================================================
+MainView::MainView (WidiKeyProcessor& p)
+    : proc (p),
+      wave (p.apvts),
       keyboard (p.keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard)
 {
-    setLookAndFeel (&lnf);
+    serif = juce::Typeface::createSystemTypefaceFor (BinaryData::InstrumentSerifItalic_ttf,
+                                                      BinaryData::InstrumentSerifItalic_ttfSize);
 
     // Üst bar
     title.setText ("widi-key", juce::dontSendNotification);
-    styleLabel (title, 24.0f, col::text, true);
+    styleLabel (title, uiFont (13.0f, true), col::text);
     addAndMakeVisible (title);
 
-    version.setText ("v0.1", juce::dontSendNotification);
-    styleLabel (version, 11.0f, col::dim);
-    version.setJustificationType (juce::Justification::centred);
-    addAndMakeVisible (version);
+    madeIn.setText ("made in wabi", juce::dontSendNotification);
+    styleLabel (madeIn, serif != nullptr ? juce::Font (juce::FontOptions (serif).withHeight (13.0f)) : uiFont (11.0f), col::accent);
+    addAndMakeVisible (madeIn);
+
+    addAndMakeVisible (lcd);
 
     cloudButton.setButtonText (tr ("Bulut"));
-    cloudButton.setToggleState (true, juce::dontSendNotification);
-    cloudButton.setColour (juce::TextButton::buttonColourId, col::chip);
-    cloudButton.setTooltip (tr ("Sesi ElevenLabs ile bulutta üretir (Mac'i yormaz)"));
+    cloudButton.setTooltip (tr ("ElevenLabs ile bulutta üretir. API anahtarı gerekir, her varyasyon kredi harcar."));
+    cloudButton.setClickingTogglesState (true);
+    cloudButton.setRadioGroupId (1001);
+    cloudButton.getProperties().set ("radius", 0.0f);
+    cloudButton.onClick = [this] { proc.setEngine (WidiKeyProcessor::Engine::cloud); refreshEngineButtons(); };
     addAndMakeVisible (cloudButton);
 
-    localButton.setButtonText (tr ("Yerel (Mac)"));
-    localButton.setEnabled (false);
-    localButton.setColour (juce::TextButton::buttonColourId, col::chip);
-    localButton.setTooltip (tr ("Yakında: M1'de internetsiz ve limitsiz üretim"));
+    localButton.setButtonText (tr ("   Yerel"));
+    localButton.setTooltip (tr ("Mac'inde internetsiz ve limitsiz üretir. Nokta yeşilse motor çalışıyor."));
+    localButton.setClickingTogglesState (true);
+    localButton.setRadioGroupId (1001);
+    localButton.getProperties().set ("radius", 0.0f);
+    localButton.onClick = [this] { proc.setEngine (WidiKeyProcessor::Engine::local); refreshEngineButtons(); };
     addAndMakeVisible (localButton);
 
     settingsButton.setButtonText (tr ("Ayarlar"));
@@ -163,269 +373,305 @@ WidiKeyEditor::WidiKeyEditor (WidiKeyProcessor& p)
     settingsButton.onClick = [this] { openSettings(); };
     addAndMakeVisible (settingsButton);
 
-    // Tarif kutusu
-    promptLabel.setText (tr ("SESİ TARİF ET"), juce::dontSendNotification);
-    styleLabel (promptLabel, 12.0f, col::dim, true);
-    addAndMakeVisible (promptLabel);
-
-    promptBox.setFont (font (16.0f));
-    promptBox.setTextToShowWhenEmpty (tr ("örn. warm dusty music box, single note"), col::dim);
+    // Tarif satırı
+    promptBox.setFont (uiFont (13.0f));
+    promptBox.setTextToShowWhenEmpty (tr ("Sesi Türkçe tarif et, örn. tozlu bir müzik kutusu, tek nota"), col::faint);
     promptBox.setJustification (juce::Justification::centredLeft);
-    promptBox.setIndents (16, 0);
+    promptBox.setIndents (12, 0);
     promptBox.setText (proc.getPrompt(), false);
     promptBox.onReturnKey = [this] { generate(); };
     addAndMakeVisible (promptBox);
 
-    generateButton.setButtonText (tr ("Üret"));
     generateButton.setColour (juce::TextButton::buttonColourId, col::accent);
     generateButton.setColour (juce::TextButton::textColourOffId, col::onAccent);
     generateButton.getProperties().set ("bold", true);
-    generateButton.getProperties().set ("radius", 12.0f);
+    generateButton.getProperties().set ("radius", 6.0f);
     generateButton.onClick = [this] { generate(); };
     addAndMakeVisible (generateButton);
 
-    const std::pair<const char*, const char*> chipData[] = {
-        { "Sıcak analog pad", "warm analog synth pad, single sustained note" },
-        { "Cam çan",          "glass bell, single bright note" },
-        { "Tozlu piyano",     "dusty old upright piano, single note" },
-        { "Fütüristik bas",   "futuristic deep bass synth, single note" },
-        { "Rüzgârda flüt",    "breathy wooden flute, single sustained note" }
-    };
+    // Dalga formu ve varyasyonlar
+    addAndMakeVisible (wave);
 
-    for (const auto& [label, prompt] : chipData)
+    for (int i = 0; i < WidiKeyProcessor::maxVariations; ++i)
     {
-        auto* chip = chips.add (new juce::TextButton (tr (label)));
-        chip->getProperties().set ("radius", 15.0f);
-        chip->getProperties().set ("outline", true);
-        chip->setColour (juce::TextButton::textColourOffId, col::text.withAlpha (0.85f));
-        const auto text = tr (prompt);
-        chip->onClick = [this, text] { promptBox.setText (text, false); promptBox.grabKeyboardFocus(); };
-        addAndMakeVisible (chip);
+        tiles[i].onPick = [this, i] { proc.selectVariation (i); };
+        addAndMakeVisible (tiles[i]);
     }
 
-    // Dalga formu
-    styleLabel (sampleNameLabel, 14.0f, col::text, true);
-    addAndMakeVisible (sampleNameLabel);
+    // Üretim ayarları
+    rows.add (new ParamRow (proc.apvts, "steps",      tr ("Kalite"),          tr ("yüksek = daha temiz, yavaş")));
+    rows.add (new ParamRow (proc.apvts, "strength",   tr ("Tarife bağlılık"), tr ("yüksek = birebir")));
+    rows.add (new ParamRow (proc.apvts, "length",     tr ("Süre"),            tr ("saniye")));
+    rows.add (new ParamRow (proc.apvts, "variations", tr ("Varyasyon"),       tr ("kaç sonuç")));
 
-    styleLabel (metaLabel, 11.0f, col::dim);
-    metaLabel.setJustificationType (juce::Justification::centredRight);
-    addAndMakeVisible (metaLabel);
+    for (auto* r : rows)
+        addAndMakeVisible (r);
 
-    styleLabel (statusLabel, 12.0f, col::dim);
-    addAndMakeVisible (statusLabel);
+    addAndMakeVisible (seedBox);
 
-    addAndMakeVisible (waveform);
+    lockButton.setButtonText (tr ("Kilit"));
+    lockButton.setTooltip (tr ("Kilitliyken aynı seed kullanılır, aynı sesi geliştirirsin."));
+    lockButton.setClickingTogglesState (true);
+    lockButton.setToggleState (proc.isSeedLocked(), juce::dontSendNotification);
+    lockButton.getProperties().set ("outline", true);
+    lockButton.getProperties().set ("accentWhenOn", true);
+    lockButton.onClick = [this] { proc.setSeedLocked (lockButton.getToggleState()); };
+    addAndMakeVisible (lockButton);
 
-    // Düğmeler
+    newSeedButton.setButtonText (tr ("Yeni"));
+    newSeedButton.setTooltip (tr ("Rastgele yeni bir seed seç"));
+    newSeedButton.getProperties().set ("outline", true);
+    newSeedButton.onClick = [this] { proc.rerollSeed(); };
+    addAndMakeVisible (newSeedButton);
+
+    // Ses ayarları düğmeleri
     const std::pair<const char*, const char*> knobData[] = {
         { "attack", "Attack" }, { "decay", "Decay" }, { "sustain", "Sustain" }, { "release", "Release" },
-        { "cutoff", "Filtre" }, { "reverb", "Reverb" }, { "length", "Süre" },     { "gain", "Ses" }
+        { "cutoff", "Kesim" }, { "resonance", "Rezonans" },
+        { "reverb", "Reverb" }, { "gain", "Ses" }
     };
 
     for (const auto& [id, name] : knobData)
-    {
-        auto* knob = knobs.add (new Knob());
-        knob->slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        knob->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 16);
-        knob->slider.setColour (juce::Slider::textBoxTextColourId, col::text);
-        knob->slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-        knob->slider.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
-        addAndMakeVisible (knob->slider);
+        addAndMakeVisible (knobs.add (new Knob (proc.apvts, id, tr (name))));
 
-        knob->label.setText (tr (name), juce::dontSendNotification);
-        styleLabel (knob->label, 11.0f, col::dim);
-        knob->label.setJustificationType (juce::Justification::centred);
-        addAndMakeVisible (knob->label);
-
-        knob->attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, id, knob->slider);
-    }
-
-    knobs[6]->slider.setTooltip (tr ("Bir sonraki üretilecek sesin uzunluğu"));
-
-    // Klavye
-    keysLabel.setText (tr ("KLAVYE"), juce::dontSendNotification);
-    styleLabel (keysLabel, 12.0f, col::dim, true);
-    addAndMakeVisible (keysLabel);
-
-    keyboard.setAvailableRange (48, 83);     // Logic adlandırmasıyla C2 – B4
+    // Klavye: Logic adlandırmasıyla C1 – B4
+    keyboard.setAvailableRange (36, 83);
     keyboard.setOctaveForMiddleC (3);
     keyboard.setScrollButtonsVisible (false);
-    keyboard.setColour (juce::MidiKeyboardComponent::whiteNoteColourId, juce::Colour (0xffeceef2));
-    keyboard.setColour (juce::MidiKeyboardComponent::blackNoteColourId, juce::Colour (0xff15171c));
-    keyboard.setColour (juce::MidiKeyboardComponent::keySeparatorLineColourId, juce::Colour (0xffb0b4bc));
+    keyboard.setColour (juce::MidiKeyboardComponent::whiteNoteColourId, juce::Colour (0xffe4e6ea));
+    keyboard.setColour (juce::MidiKeyboardComponent::blackNoteColourId, juce::Colour (0xff14161a));
+    keyboard.setColour (juce::MidiKeyboardComponent::keySeparatorLineColourId, juce::Colour (0xffa8acb4));
     keyboard.setColour (juce::MidiKeyboardComponent::keyDownOverlayColourId, col::accent);
     keyboard.setColour (juce::MidiKeyboardComponent::mouseOverKeyOverlayColourId, col::accent.withAlpha (0.25f));
     keyboard.setColour (juce::MidiKeyboardComponent::shadowColourId, juce::Colours::transparentBlack);
-    keyboard.setColour (juce::MidiKeyboardComponent::textLabelColourId, juce::Colour (0xff4a505b));
+    keyboard.setColour (juce::MidiKeyboardComponent::textLabelColourId, juce::Colour (0xff5a606b));
     addAndMakeVisible (keyboard);
 
-    setSize (1000, 680);
+    refreshEngineButtons();
+    setSize (designWidth, designHeight);
     startTimerHz (15);
     timerCallback();
 }
 
-WidiKeyEditor::~WidiKeyEditor()
+MainView::~MainView()
 {
     stopTimer();
-    setLookAndFeel (nullptr);
 }
 
-void WidiKeyEditor::paint (juce::Graphics& g)
+void MainView::refreshEngineButtons()
+{
+    const bool local = proc.getEngine() == WidiKeyProcessor::Engine::local;
+    cloudButton.setToggleState (! local, juce::dontSendNotification);
+    localButton.setToggleState (local, juce::dontSendNotification);
+    repaint();
+}
+
+void MainView::paint (juce::Graphics& g)
 {
     g.fillAll (col::bg);
 
-    auto drawPanel = [&g] (juce::Rectangle<int> r)
-    {
-        g.setColour (col::panel);
-        g.fillRoundedRectangle (r.toFloat(), 14.0f);
-        g.setColour (col::border);
-        g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 14.0f, 1.0f);
-    };
-
-    drawPanel (promptPanel);
-    drawPanel (wavePanel);
-    drawPanel (knobPanel);
-    drawPanel (keysPanel);
+    // Üst bar
+    g.setColour (col::header);
+    g.fillRect (0, 0, getWidth(), 40);
+    g.setColour (col::line);
+    g.fillRect (0, 40, getWidth(), 1);
 
     // Logo
-    const auto logo = logoArea.toFloat().withSizeKeepingCentre (28.0f, 28.0f);
+    const auto logo = logoArea.toFloat();
     g.setColour (col::accent);
-    g.drawRoundedRectangle (logo.reduced (1.0f), 7.0f, 2.0f);
-    const float heights[] = { 8.0f, 12.0f, 6.0f, 10.0f, 4.0f };
+    g.drawRoundedRectangle (logo.reduced (0.75f), 4.0f, 1.5f);
+    const float heights[] = { 4.0f, 7.0f, 2.0f, 5.0f };
 
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 4; ++i)
     {
-        const float x = logo.getX() + 7.0f + (float) i * 4.0f;
-        g.drawLine (x, logo.getCentreY() - heights[i] * 0.5f, x, logo.getCentreY() + heights[i] * 0.5f, 2.0f);
+        const float x = logo.getX() + 5.0f + (float) i * 2.6f;
+        g.drawLine (x, logo.getCentreY() - heights[i] * 0.5f, x, logo.getCentreY() + heights[i] * 0.5f, 1.5f);
     }
 
-    // Versiyon rozeti
-    g.setColour (col::border.brighter (0.1f));
-    g.drawRoundedRectangle (version.getBounds().toFloat().reduced (0.5f), 6.0f, 1.0f);
+    // Motor seçici çerçevesi
+    const auto seg = cloudButton.getBounds().getUnion (localButton.getBounds()).toFloat();
+    g.setColour (col::line);
+    g.drawRoundedRectangle (seg.reduced (0.5f), 5.0f, 1.0f);
+
+    // Varyasyon başlığı
+    const int tileTop = tiles[0].getY();
+    auto header = juce::Rectangle<int> (tiles[0].getX(), tileTop - 16, tiles[3].getRight() - tiles[0].getX(), 12);
+    g.setFont (uiFont (10.0f));
+    g.setColour (col::dim);
+    g.drawText (tr ("VARYASYONLAR"), header, juce::Justification::centredLeft);
+    g.drawText (tr ("Her üretimde birkaç farklı sonuç · beğendiğine tıkla"), header, juce::Justification::centredRight);
+
+    // Üretim ayarları paneli
+    drawWell (g, panelRect.toFloat(), col::panel);
+    auto panelTop = panelRect.reduced (12, 8).removeFromTop (12);
+    g.setColour (col::dim);
+    g.drawText (tr ("ÜRETİM AYARLARI"), panelTop, juce::Justification::centredLeft);
+    const bool local = proc.getEngine() == WidiKeyProcessor::Engine::local;
+    g.setColour (local ? col::accent : col::soft);
+    g.drawText (local ? tr ("Yerel · Stable Audio") : tr ("Bulut · ElevenLabs"), panelTop, juce::Justification::centredRight);
+
+    g.setColour (col::faint);
+    g.drawText (tr ("Kilit açıkken her üretim yeni, kilitliyken aynı sesi geliştirirsin."),
+                juce::Rectangle<int> (panelRect.getX() + 12, seedBox.getY() - 16, panelRect.getWidth() - 24, 12),
+                juce::Justification::centredLeft, true);
+
+    // Ses ayarları şeridi
+    drawWell (g, knobStrip.toFloat(), col::panel);
+    const char* groupTitles[] = { "ZARF · notanın açılıp kapanışı", "FİLTRE · parlaklık", "ÇIKIŞ" };
+
+    for (int i = 0; i < 3; ++i)
+    {
+        if (i > 0)
+        {
+            g.setColour (col::line);
+            g.fillRect (groupRects[i].getX(), knobStrip.getY() + 1, 1, knobStrip.getHeight() - 2);
+        }
+
+        g.setColour (col::dim);
+        g.setFont (uiFont (9.0f));
+        g.drawText (tr (groupTitles[i]), groupRects[i].reduced (12, 0).withY (knobStrip.getY() + 8).withHeight (10),
+                    juce::Justification::centredLeft);
+    }
+
+    // Klavye kuyusu
+    drawWell (g, keysRect.toFloat(), col::well);
 }
 
-void WidiKeyEditor::resized()
+void MainView::paintOverChildren (juce::Graphics& g)
 {
-    auto area = getLocalBounds().reduced (24, 20).withTrimmedBottom (4);
+    // Yerel motor durumu: yeşil nokta = çalışıyor
+    const auto b = localButton.getBounds().toFloat();
+    const auto dot = juce::Rectangle<float> (6.0f, 6.0f).withCentre ({ b.getX() + 14.0f, b.getCentreY() });
+    g.setColour (proc.isEngineOnline() ? col::accent : col::idleBar);
+    g.fillEllipse (dot);
+}
 
+void MainView::resized()
+{
     // Üst bar
-    auto header = area.removeFromTop (44);
-    logoArea = header.removeFromLeft (36);
-    header.removeFromLeft (8);
-    title.setBounds (header.removeFromLeft (112));
-    version.setBounds (header.removeFromLeft (44).withSizeKeepingCentre (44, 22));
+    logoArea = { 12, 11, 18, 18 };
+    title.setBounds (38, 7, 110, 14);
+    madeIn.setBounds (38, 21, 110, 14);
+    settingsButton.setBounds (getWidth() - 12 - 56, 7, 56, 26);
+    localButton.setBounds (settingsButton.getX() - 8 - 66, 7, 66, 26);
+    cloudButton.setBounds (localButton.getX() - 58, 7, 58, 26);
+    lcd.setBounds (170, 7, cloudButton.getX() - 12 - 170, 26);
 
-    settingsButton.setBounds (header.removeFromRight (92).withSizeKeepingCentre (92, 40));
-    header.removeFromRight (12);
-    localButton.setBounds (header.removeFromRight (112).withSizeKeepingCentre (112, 36));
-    header.removeFromRight (4);
-    cloudButton.setBounds (header.removeFromRight (80).withSizeKeepingCentre (80, 36));
+    // Tarif satırı
+    generateButton.setBounds (getWidth() - 12 - 96, 50, 96, 36);
+    promptBox.setBounds (12, 50, generateButton.getX() - 8 - 12, 36);
 
-    // Tarif paneli
-    area.removeFromTop (16);
-    promptPanel = area.removeFromTop (130);
+    // Orta bölüm
+    panelRect = { getWidth() - 12 - 236, 96, 236, 196 };
+    const int leftWidth = panelRect.getX() - 10 - 12;
+    wave.setBounds (12, 96, leftWidth, 126);
+
+    const int tileWidth = (leftWidth - 3 * 8) / 4;
+
+    for (int i = 0; i < WidiKeyProcessor::maxVariations; ++i)
+        tiles[i].setBounds (12 + i * (tileWidth + 8), 246, tileWidth, 46);
+
+    auto pr = panelRect.reduced (12, 8);
+    pr.removeFromTop (18);
+
+    for (auto* r : rows)
     {
-        auto r = promptPanel.reduced (20, 16);
-        promptLabel.setBounds (r.removeFromTop (16));
-        r.removeFromTop (10);
-
-        auto row = r.removeFromTop (52);
-        generateButton.setBounds (row.removeFromRight (130));
-        row.removeFromRight (10);
-        promptBox.setBounds (row);
-
-        r.removeFromTop (10);
-        int x = r.getX();
-
-        for (auto* chip : chips)
-        {
-            chip->changeWidthToFitText (30);
-            chip->setBounds (x, r.getY(), chip->getWidth() + 12, 30);
-            x += chip->getWidth() + 8;
-        }
+        r->setBounds (pr.removeFromTop (27));
+        pr.removeFromTop (3);
     }
 
-    // Dalga formu + düğmeler
-    area.removeFromTop (16);
-    auto middle = area.removeFromTop (176);
-    knobPanel = middle.removeFromRight (360);
-    middle.removeFromRight (16);
-    wavePanel = middle;
-    {
-        auto r = wavePanel.reduced (18, 14);
-        auto top = r.removeFromTop (18);
-        metaLabel.setBounds (top.removeFromRight (160));
-        sampleNameLabel.setBounds (top);
-        statusLabel.setBounds (r.removeFromBottom (18));
-        r.removeFromBottom (8);
-        r.removeFromTop (8);
-        waveform.setBounds (r);
-    }
-    {
-        auto r = knobPanel.reduced (10, 8);
-        const int cellW = r.getWidth() / 4;
-        const int cellH = r.getHeight() / 2;
+    auto seedRow = juce::Rectangle<int> (pr.getX(), panelRect.getBottom() - 8 - 26, pr.getWidth(), 26);
+    newSeedButton.setBounds (seedRow.removeFromRight (44));
+    seedRow.removeFromRight (6);
+    lockButton.setBounds (seedRow.removeFromRight (44));
+    seedRow.removeFromRight (6);
+    seedBox.setBounds (seedRow);
 
-        for (int i = 0; i < knobs.size(); ++i)
-        {
-            juce::Rectangle<int> cell (r.getX() + (i % 4) * cellW, r.getY() + (i / 4) * cellH, cellW, cellH);
-            knobs[i]->label.setBounds (cell.removeFromTop (14));
-            knobs[i]->slider.setBounds (cell);
-        }
+    // Ses ayarları şeridi
+    knobStrip = { 12, 302, getWidth() - 24, 72 };
+    const int unit = knobStrip.getWidth() / 8;
+    groupRects[0] = { knobStrip.getX(),            knobStrip.getY(), unit * 4, knobStrip.getHeight() };
+    groupRects[1] = { groupRects[0].getRight(),    knobStrip.getY(), unit * 2, knobStrip.getHeight() };
+    groupRects[2] = { groupRects[1].getRight(),    knobStrip.getY(), knobStrip.getRight() - groupRects[1].getRight(), knobStrip.getHeight() };
+
+    const int knobsPerGroup[] = { 4, 2, 2 };
+    int k = 0;
+
+    for (int gi = 0; gi < 3; ++gi)
+    {
+        auto area = groupRects[gi].reduced (12, 0).withTrimmedTop (22).withHeight (40);
+        const int cell = area.getWidth() / knobsPerGroup[gi];
+
+        for (int j = 0; j < knobsPerGroup[gi]; ++j, ++k)
+            knobs[k]->setBounds (area.getX() + j * cell, area.getY(), juce::jmin (cell, 96), 40);
     }
 
     // Klavye
-    area.removeFromTop (16);
-    keysPanel = area;
-    {
-        auto r = keysPanel.reduced (16, 12);
-        keysLabel.setBounds (r.removeFromTop (16));
-        r.removeFromTop (8);
-        keyboard.setBounds (r);
-        keyboard.setKeyWidth ((float) r.getWidth() / 21.0f);
-    }
+    keysRect = { 12, 384, getWidth() - 24, getHeight() - 12 - 384 };
+    const auto keys = keysRect.reduced (6);
+    keyboard.setBounds (keys);
+    keyboard.setKeyWidth ((float) keys.getWidth() / 28.0f);
 }
 
-void WidiKeyEditor::timerCallback()
+void MainView::timerCallback()
 {
     const auto status = proc.getStatus();
     const bool working = status == WidiKeyProcessor::Status::working;
-
-    auto message = proc.getStatusMessage();
-
-    if (message.isEmpty())
-        message = proc.getSampleLengthSeconds() > 0.0 ? tr ("Hazır · klavyeden çalabilirsin")
-                                                      : tr ("Bir tarif yaz ve Üret'e bas.");
-
-    statusLabel.setText (message, juce::dontSendNotification);
-    statusLabel.setColour (juce::Label::textColourId, status == WidiKeyProcessor::Status::error ? col::error : col::dim);
+    const int count = (int) proc.apvts.getRawParameterValue ("variations")->load();
 
     generateButton.setEnabled (! working);
-    generateButton.setButtonText (working ? tr ("Üretiliyor…") : tr ("Üret"));
-    waveform.setBusy (working);
+    generateButton.setButtonText (working ? tr ("Üretiliyor…") : (count > 1 ? tr ("Üret ×") + juce::String (count) : tr ("Üret")));
+    wave.setBusy (working);
+    wave.repaint();
+
+    const int selected = proc.getSelectedVariation();
+    const auto info = proc.getVariationInfo();
 
     const int currentVersion = proc.getSampleVersion();
 
     if (currentVersion != lastVersion)
     {
         lastVersion = currentVersion;
-        waveform.setPeaks (proc.getPeaks());
-
-        const auto name = proc.getSampleName();
-        sampleNameLabel.setText (name.isEmpty() ? tr ("Henüz ses yok")
-                                                : name.substring (0, 1).toUpperCase() + name.substring (1),
-                                 juce::dontSendNotification);
-
-        const auto seconds = proc.getSampleLengthSeconds();
-        metaLabel.setText (seconds > 0.0 ? tr ("KÖK C3 · ") + juce::String (seconds, 1).replace (".", ",") + " s"
-                                         : juce::String(),
-                           juce::dontSendNotification);
+        const bool has = selected < (int) info.size();
+        wave.setData (has ? info[(size_t) selected].peaks : std::vector<float>(), has ? info[(size_t) selected].seconds : 0.0);
     }
+
+    for (int i = 0; i < WidiKeyProcessor::maxVariations; ++i)
+    {
+        const bool available = i < (int) info.size();
+        tiles[i].setData (i, available ? info[(size_t) i].peaks : std::vector<float>(),
+                          available ? info[(size_t) i].seed : -1, available && i == selected, available, working);
+    }
+
+    // Bilgi ekranı
+    juce::String left;
+    const bool isError = status == WidiKeyProcessor::Status::error;
+
+    if (working || isError)
+        left = proc.getStatusMessage();
+    else
+    {
+        const auto name = proc.getSampleName();
+        left = name.isEmpty() ? tr ("Hazır · sesi tarif et ve Üret'e bas")
+                              : name.substring (0, 1).toUpperCase() + name.substring (1);
+    }
+
+    juce::String right;
+
+    if (! info.empty() && selected < (int) info.size())
+        right = tr ("KÖK C3 · ") + juce::String (info[(size_t) selected].seconds, 1) + " s · VAR "
+                + juce::String::charToString ((juce::juce_wchar) ('A' + selected));
+
+    lcd.setText (noteSafeText (left, 70), right, isError);
+    seedBox.setText (tr ("SEED  ") + juce::String (proc.getBaseSeed()), proc.isSeedLocked() ? tr ("kilitli") : juce::String(), false);
+    lockButton.setToggleState (proc.isSeedLocked(), juce::dontSendNotification);
+
+    repaint (localButton.getBounds());
 }
 
-void WidiKeyEditor::generate()
+void MainView::generate()
 {
-    if (WidiKeyProcessor::loadApiKey().isEmpty())
+    if (proc.getEngine() == WidiKeyProcessor::Engine::cloud && WidiKeyProcessor::loadApiKey().isEmpty())
     {
         openSettings();
         return;
@@ -434,21 +680,60 @@ void WidiKeyEditor::generate()
     proc.startGeneration (promptBox.getText());
 }
 
-void WidiKeyEditor::openSettings()
+void MainView::openSettings()
 {
-    auto* window = new juce::AlertWindow (tr ("widi-key ayarları"),
-                                          tr ("ElevenLabs API anahtarını yapıştır. Anahtar sadece bu Mac'te saklanır.\n"
-                                              "Anahtarı elevenlabs.io'da giriş yaptıktan sonra API Keys bölümünden alabilirsin."),
-                                          juce::MessageBoxIconType::NoIcon,
-                                          this);
+    const juce::String message =
+        tr ("BULUT (ElevenLabs)\nAPI anahtarını aşağıya yapıştır. Anahtar sadece bu Mac'te saklanır.\n\n"
+            "YEREL MOTOR\nDurum: ") + (proc.isEngineOnline() ? tr ("çalışıyor") : tr ("kapalı")) +
+        tr ("\nKurmak için Terminal'e şunu yapıştır:\n"
+            "curl -fsSL https://raw.githubusercontent.com/wabiblack/widi-key/main/engine/install.sh | bash");
 
-    window->addTextEditor ("key", WidiKeyProcessor::loadApiKey(), tr ("API anahtarı"), true);
+    auto* window = new juce::AlertWindow (tr ("widi-key ayarları"), message, juce::MessageBoxIconType::NoIcon, this);
+    window->addTextEditor ("key", WidiKeyProcessor::loadApiKey(), tr ("ElevenLabs API anahtarı"), true);
     window->addButton (tr ("Kaydet"), 1, juce::KeyPress (juce::KeyPress::returnKey));
-    window->addButton (tr ("İptal"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    window->addButton (tr ("Komutu kopyala"), 2);
+    window->addButton (tr ("Kapat"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
 
     window->enterModalState (true, juce::ModalCallbackFunction::create ([window] (int result)
     {
         if (result == 1)
             WidiKeyProcessor::saveApiKey (window->getTextEditorContents ("key"));
+        else if (result == 2)
+            juce::SystemClipboard::copyTextToClipboard (
+                "curl -fsSL https://raw.githubusercontent.com/wabiblack/widi-key/main/engine/install.sh | bash");
     }), true);
+}
+
+//==============================================================================
+WidiKeyEditor::WidiKeyEditor (WidiKeyProcessor& p)
+    : AudioProcessorEditor (p), view (p)
+{
+    setLookAndFeel (&lnf);
+    addAndMakeVisible (view);
+
+    setResizable (true, true);
+    setResizeLimits (MainView::designWidth * 3 / 4, MainView::designHeight * 3 / 4,
+                     MainView::designWidth * 3 / 2, MainView::designHeight * 3 / 2);
+
+    if (auto* constrainer = getConstrainer())
+        constrainer->setFixedAspectRatio ((double) MainView::designWidth / (double) MainView::designHeight);
+
+    setSize (MainView::designWidth, MainView::designHeight);
+}
+
+WidiKeyEditor::~WidiKeyEditor()
+{
+    setLookAndFeel (nullptr);
+}
+
+void WidiKeyEditor::paint (juce::Graphics& g)
+{
+    g.fillAll (col::bg);
+}
+
+void WidiKeyEditor::resized()
+{
+    const float scale = (float) getWidth() / (float) MainView::designWidth;
+    view.setTransform (juce::AffineTransform::scale (scale));
+    view.setBounds (0, 0, MainView::designWidth, MainView::designHeight);
 }

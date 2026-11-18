@@ -47,6 +47,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v0.1.${{ github.run_number }}" dist/*.zip \
-            --title "widi-key v0.1.${{ github.run_number }}" \
+          gh release create "v0.2.${{ github.run_number }}" dist/*.zip \
+            --title "widi-key v0.2.${{ github.run_number }}" \
             --notes "Otomatik derleme. Kurulum adimlari README'de."
