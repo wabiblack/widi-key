@@ -67,11 +67,41 @@ def _device():
     return "mps" if torch.backends.mps.is_available() else "cpu"
 
 
+_mps_patched = False
+
+
+def _patch_mps_float64():
+    """MPS float64 desteklemiyor. Tensor.to() içinde float64 hatası çıkarsa
+    tensörü float32'ye çevirip tekrar dene."""
+    global _mps_patched
+    if _mps_patched:
+        return
+    import torch
+
+    original_to = torch.Tensor.to
+
+    def safe_to(self, *args, **kwargs):
+        try:
+            return original_to(self, *args, **kwargs)
+        except (TypeError, RuntimeError) as exc:
+            if "float64" not in str(exc):
+                raise
+            args = tuple(torch.float32 if a is torch.float64 else a for a in args)
+            if kwargs.get("dtype") is torch.float64:
+                kwargs["dtype"] = torch.float32
+            source = self.float() if self.dtype == torch.float64 else self
+            return original_to(source, *args, **kwargs)
+
+    torch.Tensor.to = safe_to
+    _mps_patched = True
+
+
 def load_audio():
     with _load_lock:
         if _state["audio"] is None:
             from stable_audio_tools import get_pretrained_model
 
+            _patch_mps_float64()
             model, config = get_pretrained_model(AUDIO_MODEL)
             dev = _device()
             model = model.to(dev).eval()
@@ -179,12 +209,11 @@ def generate(request):
     prompt_en = translate(request.get("prompt", ""))
     full_prompt = prompt_en + request.get("suffix", "")
 
-    clips = []
-    for seed in seeds:
+    def run(current_model, seed):
         conditioning = [{"prompt": full_prompt, "seconds_total": seconds}]
         with torch.no_grad():
-            output = generate_diffusion_cond(
-                model,
+            return generate_diffusion_cond(
+                current_model,
                 steps=steps,
                 cfg_scale=cfg_scale,
                 conditioning=conditioning,
@@ -193,6 +222,20 @@ def generate(request):
                 device=_state["device"],
                 seed=seed,
             )
+
+    clips = []
+    for seed in seeds:
+        try:
+            output = run(model, seed)
+        except (TypeError, RuntimeError) as exc:
+            if _state["device"] != "mps":
+                raise
+            print(f"MPS hatası, CPU'ya geçiliyor: {exc}", flush=True)
+            with _load_lock:
+                model = model.to("cpu")
+                _state["audio"] = (model, config)
+                _state["device"] = "cpu"
+            output = run(model, seed)
         audio = rearrange(output, "b d n -> d (b n)").to(torch.float32).cpu()
         audio = audio[:, : int(seconds * sample_rate)]
         audio = _trim_and_normalize(audio, sample_rate)
