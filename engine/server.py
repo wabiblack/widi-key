@@ -93,6 +93,16 @@ def _patch_mps_float64():
             return original_to(source, *args, **kwargs)
 
     torch.Tensor.to = safe_to
+
+    # stable-audio-tools'un APG hesabı .double() çağırıyor; MPS'te float32 kullan
+    original_double = torch.Tensor.double
+
+    def safe_double(self, *args, **kwargs):
+        if self.device.type == "mps":
+            return self.float()
+        return original_double(self, *args, **kwargs)
+
+    torch.Tensor.double = safe_double
     _mps_patched = True
 
 
