@@ -26,6 +26,27 @@ AUDIO_MODEL = "stabilityai/stable-audio-open-small"
 TRANSLATE_MODEL = "Helsinki-NLP/opus-mt-tc-big-tr-en"
 MAX_SECONDS = 11.0
 
+def _patch_pywt():
+    """PyWavelets numpy sürümüyle uyumsuz derlenmiş olabilir. Bu model dalgacık
+    dönüşümü kullanmadığı için, içe aktarılamıyorsa yerine boş bir modül koy."""
+    try:
+        import pywt  # noqa: F401
+    except Exception:  # noqa: BLE001
+        import types
+
+        for name in [m for m in sys.modules if m == "pywt" or m.startswith("pywt.")]:
+            del sys.modules[name]
+
+        def _unavailable(*_args, **_kwargs):
+            raise RuntimeError("PyWavelets bu ortamda kullanılamıyor")
+
+        stub = types.ModuleType("pywt")
+        stub.__getattr__ = lambda _name: _unavailable
+        sys.modules["pywt"] = stub
+
+
+_patch_pywt()
+
 _work_lock = threading.Lock()
 _load_lock = threading.Lock()
 _state = {"audio": None, "translator": None, "device": None, "error": None}
