@@ -54,11 +54,16 @@ say "Kütüphaneler kuruluyor (birkaç dakika sürebilir)"
 
 # 3) Motor dosyası ------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/server.py" ]; then
-  cp "$SCRIPT_DIR/server.py" "$ENGINE_DIR/server.py"
-else
-  curl -fsSL "$RAW/server.py" -o "$ENGINE_DIR/server.py"
-fi
+for f in server.py fix_deps.py; do
+  if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/$f" ]; then
+    cp "$SCRIPT_DIR/$f" "$ENGINE_DIR/$f"
+  else
+    curl -fsSL "$RAW/$f" -o "$ENGINE_DIR/$f"
+  fi
+done
+
+say "Eksik bağımlılıklar kontrol ediliyor"
+"$PY" "$ENGINE_DIR/fix_deps.py"
 
 # 4) Hugging Face girişi ------------------------------------------------------
 if ! "$PY" -c "from huggingface_hub import whoami; whoami()" >/dev/null 2>&1; then
