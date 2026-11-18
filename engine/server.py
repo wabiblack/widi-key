@@ -40,8 +40,14 @@ def _patch_pywt():
         def _unavailable(*_args, **_kwargs):
             raise RuntimeError("PyWavelets bu ortamda kullanılamıyor")
 
+        def _stub_getattr(name):
+            if name.startswith("__"):
+                raise AttributeError(name)
+            return _unavailable
+
         stub = types.ModuleType("pywt")
-        stub.__getattr__ = lambda _name: _unavailable
+        stub.__file__ = __file__
+        stub.__getattr__ = _stub_getattr
         sys.modules["pywt"] = stub
 
 
