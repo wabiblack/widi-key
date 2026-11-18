@@ -1,0 +1,52 @@
+name: Mac'te derle
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: CMake yapılandır
+        run: cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+
+      - name: Derle
+        run: cmake --build build --config Release --target WidiKey_AU WidiKey_Standalone -- -quiet
+
+      - name: Imzala ve paketle
+        run: |
+          AU="build/WidiKey_artefacts/Release/AU/widi-key.component"
+          APP="build/WidiKey_artefacts/Release/Standalone/widi-key.app"
+          codesign --force --deep --sign - "$AU"
+          codesign --force --deep --sign - "$APP"
+          mkdir -p dist
+          ditto -c -k --keepParent "$AU" dist/widi-key-AU.zip
+          ditto -c -k --keepParent "$APP" dist/widi-key-Standalone.zip
+
+      - name: AU dogrulama (auval)
+        continue-on-error: true
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/WidiKey_artefacts/Release/AU/widi-key.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          auval -v aumu Wdky Wabi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: widi-key
+          path: dist/*.zip
+
+      - name: Surum yayinla
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v0.1.${{ github.run_number }}" dist/*.zip \
+            --title "widi-key v0.1.${{ github.run_number }}" \
+            --notes "Otomatik derleme. Kurulum adimlari README'de."
