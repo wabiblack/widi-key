@@ -2,8 +2,24 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
+#include "WidiSampler.h"
 
-class WidiKeyProcessor : public juce::AudioProcessor
+//==============================================================================
+// Tarif geçmişi ve favoriler (tüm projeler arasında ortak)
+namespace PromptStore
+{
+    juce::StringArray getHistory();
+    juce::StringArray getFavorites();
+    void addToHistory (const juce::String& prompt);
+    bool isFavorite (const juce::String& prompt);
+    void toggleFavorite (const juce::String& prompt);
+    void clearHistory();
+}
+
+//==============================================================================
+class WidiKeyProcessor : public juce::AudioProcessor,
+                         private juce::AudioProcessorValueTreeState::Listener,
+                         private juce::AsyncUpdater
 {
 public:
     enum class Status { idle, working, ok, error };
@@ -14,6 +30,8 @@ public:
         std::vector<float> peaks;
         double seconds = 0.0;
         int seed = -1;
+        bool pitched = false;
+        double root = 60.0;
     };
 
     static constexpr int maxVariations = 4;
@@ -47,17 +65,28 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     // --- Üretim ---
-    void startGeneration (const juce::String& prompt);
+    void startGeneration (const juce::String& prompt, const juce::String& negative, bool similarToSelected);
     Status getStatus() const { return status.load(); }
     juce::String getStatusMessage() const;
     juce::String getPrompt() const;
+    juce::String getNegative() const;
     juce::String getSampleName() const;
+    bool hasSample() const;
 
     // --- Varyasyonlar ---
     std::vector<VariationInfo> getVariationInfo() const;
     int getSelectedVariation() const;
     void selectVariation (int index);
     int getSampleVersion() const { return sampleVersion.load(); }
+    bool isDrumMode() const;
+
+    // --- Dışa aktarma ve kütüphane ---
+    juce::File exportSelectedToWav();
+    bool saveSelectedToLibrary (const juce::String& name);
+    bool loadFromLibrary (const juce::File& file);
+    static juce::File getLibraryFolder();
+    static juce::File getExportFolder();
+    static juce::Array<juce::File> listLibrary();
 
     // --- Motor ve seed ---
     Engine getEngine() const { return engine.load(); }
@@ -81,32 +110,37 @@ private:
     struct Variation
     {
         juce::MemoryBlock bytes;
-        juce::SynthesiserSound::Ptr sound;
+        std::shared_ptr<juce::AudioBuffer<float>> audio;
+        double sourceRate = 44100.0;
         std::vector<float> peaks;
         double seconds = 0.0;
         int seed = -1;
+        widi::PitchResult pitch;
     };
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
+    void parameterChanged (const juce::String& parameterID, float newValue) override;
+    void handleAsyncUpdate() override;
+
     std::unique_ptr<juce::AudioFormatReader> createReader (const juce::MemoryBlock& bytes);
-    bool decodeVariation (Variation& variation, const juce::String& name, juce::String& error);
+    bool decodeVariation (Variation& variation, juce::String& error);
     void setVariations (std::vector<Variation>&& newVariations, const juce::String& name);
-    void applySelected();
+    void rebuildSounds();
     void setStatus (Status newStatus, const juce::String& message);
+    juce::MemoryBlock selectedAsWav() const;
+    static juce::MemoryBlock bufferToWav (const juce::AudioBuffer<float>& audio, double rate);
 
     juce::Synthesiser synth;
-    juce::CriticalSection soundLock;
-    juce::SynthesiserSound::Ptr currentSound;
+    widi::VoiceSettings voiceSettings;
 
     juce::AudioFormatManager formatManager;
-    juce::dsp::StateVariableTPTFilter<float> filter;
     juce::dsp::Reverb reverb;
 
     mutable juce::CriticalSection dataLock;
     std::vector<Variation> variations;
     int selected = 0;
-    juce::String sampleName, lastPrompt, statusMessage;
+    juce::String sampleName, lastPrompt, lastNegative, statusMessage;
 
     std::atomic<Status> status { Status::idle };
     std::atomic<Engine> engine { Engine::local };

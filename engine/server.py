@@ -202,6 +202,28 @@ def _to_wav(audio, sample_rate):
     return buffer.getvalue()
 
 
+def _from_wav(data):
+    """WAV baytlarını (kanal, örnek) float32 tensörüne çevirir."""
+    import numpy as np
+    import torch
+
+    with wave.open(io.BytesIO(data), "rb") as w:
+        channels = w.getnchannels()
+        width = w.getsampwidth()
+        rate = w.getframerate()
+        frames = w.readframes(w.getnframes())
+
+    if width == 2:
+        pcm = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    elif width == 4:
+        pcm = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+    else:
+        raise ValueError("Desteklenmeyen WAV biçimi")
+
+    audio = torch.from_numpy(pcm.reshape(-1, channels).T.copy())
+    return rate, audio
+
+
 def generate(request):
     import torch
     from einops import rearrange
@@ -219,19 +241,47 @@ def generate(request):
     prompt_en = translate(request.get("prompt", ""))
     full_prompt = prompt_en + request.get("suffix", "")
 
+    # "İstemediğin" kutusu: negatif tarif yalnızca CFG > 1 iken etkili
+    negative_en = translate(request.get("negative", ""))
+    if negative_en and cfg_scale < 2.0:
+        cfg_scale = 2.0
+
+    # "Buna benzer üret": seçili sesi başlangıç olarak kullan
+    init_audio = None
+    if request.get("init_audio"):
+        try:
+            init_audio = _from_wav(base64.b64decode(request["init_audio"]))
+        except Exception as exc:  # noqa: BLE001
+            print(f"Başlangıç sesi okunamadı, atlanıyor: {exc}", flush=True)
+    similarity = max(0.0, min(1.0, float(request.get("similarity", 0.5))))
+    init_noise_level = 1.0 - 0.75 * similarity
+
     def run(current_model, seed):
-        conditioning = [{"prompt": full_prompt, "seconds_total": seconds}]
+        kwargs = dict(
+            steps=steps,
+            cfg_scale=cfg_scale,
+            conditioning=[{"prompt": full_prompt, "seconds_total": seconds}],
+            sample_size=sample_size,
+            sampler_type="pingpong",
+            device=_state["device"],
+            seed=seed,
+        )
+        if negative_en:
+            kwargs["negative_conditioning"] = [{"prompt": negative_en, "seconds_total": seconds}]
+        if init_audio is not None:
+            kwargs["init_audio"] = init_audio
+            kwargs["init_noise_level"] = init_noise_level
+
         with torch.no_grad():
-            return generate_diffusion_cond(
-                current_model,
-                steps=steps,
-                cfg_scale=cfg_scale,
-                conditioning=conditioning,
-                sample_size=sample_size,
-                sampler_type="pingpong",
-                device=_state["device"],
-                seed=seed,
-            )
+            try:
+                return generate_diffusion_cond(current_model, **kwargs)
+            except TypeError as exc:
+                # Eski bir stable-audio-tools sürümü bu seçenekleri tanımıyorsa onlarsız dene
+                if "unexpected keyword" not in str(exc):
+                    raise
+                for key in ("negative_conditioning", "init_audio", "init_noise_level"):
+                    kwargs.pop(key, None)
+                return generate_diffusion_cond(current_model, **kwargs)
 
     clips = []
     for seed in seeds:
@@ -246,12 +296,13 @@ def generate(request):
                 _state["audio"] = (model, config)
                 _state["device"] = "cpu"
             output = run(model, seed)
+
         audio = rearrange(output, "b d n -> d (b n)").to(torch.float32).cpu()
         audio = audio[:, : int(seconds * sample_rate)]
         audio = _trim_and_normalize(audio, sample_rate)
         clips.append(base64.b64encode(_to_wav(audio, sample_rate)).decode("ascii"))
 
-    return {"audio": clips, "seeds": seeds, "prompt_en": prompt_en}
+    return {"audio": clips, "seeds": seeds, "prompt_en": prompt_en, "device": _state["device"]}
 
 
 # --------------------------------------------------------------------------- #

@@ -6,10 +6,10 @@ using widi::tr;
 
 namespace
 {
-    constexpr int rootNote = 60; // Logic'te C3
-
-    const char* cloudSuffix = ", single isolated note, one shot, clean, no background noise";
-    const char* localSuffix = ", single note, one shot, clean";
+    const char* cloudSuffixMelodic = ", single isolated note, one shot, clean, no background noise";
+    const char* cloudSuffixDrum    = ", single drum hit, one shot, percussive, dry, no background noise";
+    const char* localSuffixMelodic = ", single note, one shot, clean";
+    const char* localSuffixDrum    = ", single drum hit, one shot, percussive, dry";
 
     juce::PropertiesFile::Options settingsOptions()
     {
@@ -44,6 +44,36 @@ namespace
         return true;
     }
 
+    juce::String translateViaEngine (const juce::String& text)
+    {
+        if (text.trim().isEmpty())
+            return text;
+
+        auto* obj = new juce::DynamicObject();
+        juce::var body (obj);
+        obj->setProperty ("text", text);
+
+        juce::MemoryBlock response;
+        int statusCode = 0;
+
+        if (httpPost (engineUrl ("/translate"), juce::JSON::toString (body, true),
+                      "Content-Type: application/json", 60000, response, statusCode) && statusCode == 200)
+        {
+            const auto translated = juce::JSON::parse (response.toString()).getProperty ("text", {}).toString();
+
+            if (translated.isNotEmpty())
+                return translated;
+        }
+
+        return text;
+    }
+
+    juce::String safeFileName (const juce::String& name)
+    {
+        auto cleaned = juce::File::createLegalFileName (name.trim()).replaceCharacters ("/:", "--");
+        return cleaned.isEmpty() ? juce::String ("widi-key") : cleaned.substring (0, 60);
+    }
+
     juce::String formatSeconds (float v, int)
     {
         return v < 1.0f ? juce::String (juce::roundToInt (v * 1000.0f)) + " ms"
@@ -58,8 +88,70 @@ namespace
                             : juce::String (juce::roundToInt (v)) + " Hz";
     }
 
-    juce::String formatDb (float v, int)     { return juce::String (v, 1) + " dB"; }
-    juce::String formatPlain (float v, int)  { return juce::String (v, 2); }
+    juce::String formatDb (float v, int)      { return juce::String (v, 1) + " dB"; }
+    juce::String formatPlain (float v, int)   { return juce::String (v, 2); }
+    juce::String formatOctaves (float v, int) { return juce::String (v, 1) + " okt"; }
+}
+
+//==============================================================================
+namespace PromptStore
+{
+    static juce::StringArray readList (const char* key)
+    {
+        juce::PropertiesFile file (settingsOptions());
+        juce::StringArray list;
+        list.addLines (file.getValue (key));
+        list.removeEmptyStrings();
+        return list;
+    }
+
+    static void writeList (const char* key, const juce::StringArray& list)
+    {
+        juce::PropertiesFile file (settingsOptions());
+        file.setValue (key, list.joinIntoString ("\n"));
+        file.saveIfNeeded();
+    }
+
+    juce::StringArray getHistory()   { return readList ("history"); }
+    juce::StringArray getFavorites() { return readList ("favorites"); }
+
+    void addToHistory (const juce::String& prompt)
+    {
+        const auto p = prompt.trim().replaceCharacters ("\r\n", "  ");
+
+        if (p.isEmpty())
+            return;
+
+        auto list = getHistory();
+        list.removeString (p);
+        list.insert (0, p);
+
+        while (list.size() > 30)
+            list.remove (list.size() - 1);
+
+        writeList ("history", list);
+    }
+
+    bool isFavorite (const juce::String& prompt) { return getFavorites().contains (prompt.trim()); }
+
+    void toggleFavorite (const juce::String& prompt)
+    {
+        const auto p = prompt.trim().replaceCharacters ("\r\n", "  ");
+
+        if (p.isEmpty())
+            return;
+
+        auto list = getFavorites();
+
+        if (list.contains (p))
+            list.removeString (p);
+        else
+            list.insert (0, p);
+
+        writeList ("favorites", list);
+    }
+
+    void clearHistory() { writeList ("history", {}); }
 }
 
 //==============================================================================
@@ -97,11 +189,14 @@ class WidiKeyProcessor::GenerateThread : public juce::Thread
 public:
     struct Request
     {
-        juce::String prompt;
+        juce::String prompt, negative;
         Engine engine = Engine::local;
+        bool drum = false;
         float seconds = 3.0f;
         int steps = 8;
         float strength = 0.0f;
+        float similarity = 0.5f;
+        juce::MemoryBlock initAudio;
         std::vector<int> seeds;
     };
 
@@ -124,9 +219,11 @@ public:
             return;
         }
 
+        owner.setStatus (Status::working, tr ("Notalar ayarlanıyor…"));
+
         for (auto& v : results)
         {
-            if (! owner.decodeVariation (v, request.prompt, error))
+            if (! owner.decodeVariation (v, error))
             {
                 owner.setStatus (Status::error, error);
                 return;
@@ -142,7 +239,7 @@ private:
     {
         if (! owner.isEngineOnline())
         {
-            error = tr ("Yerel motor kapalı. Kurulum için README'deki tek satırlık komutu çalıştır.");
+            error = tr ("Yerel motor kapalı. Ayarlar'daki kurulum komutunu çalıştır.");
             return false;
         }
 
@@ -154,11 +251,18 @@ private:
             seedList.add (s);
 
         obj->setProperty ("prompt", request.prompt);
-        obj->setProperty ("suffix", juce::String (localSuffix));
+        obj->setProperty ("negative", request.negative);
+        obj->setProperty ("suffix", juce::String (request.drum ? localSuffixDrum : localSuffixMelodic));
         obj->setProperty ("seconds", (double) request.seconds);
         obj->setProperty ("steps", request.steps);
         obj->setProperty ("cfg", 1.0 + (double) request.strength * 2.0);
         obj->setProperty ("seeds", seedList);
+
+        if (request.initAudio.getSize() > 0)
+        {
+            obj->setProperty ("init_audio", juce::Base64::toBase64 (request.initAudio.getData(), request.initAudio.getSize()));
+            obj->setProperty ("similarity", (double) request.similarity);
+        }
 
         owner.setStatus (Status::working, tr ("Mac'inde üretiliyor… (") + juce::String ((int) request.seeds.size())
                                               + tr (" varyasyon)"));
@@ -167,7 +271,7 @@ private:
         int statusCode = 0;
 
         if (! httpPost (engineUrl ("/generate"), juce::JSON::toString (body, true),
-                        "Content-Type: application/json", 600000, response, statusCode))
+                        "Content-Type: application/json", 900000, response, statusCode))
         {
             error = tr ("Yerel motora bağlanılamadı.");
             return false;
@@ -218,27 +322,19 @@ private:
 
         // Türkçe tarifi gizlice İngilizceye çevir (motor açıksa)
         auto englishPrompt = request.prompt;
+        auto englishNegative = request.negative;
 
         if (owner.isEngineOnline())
         {
             owner.setStatus (Status::working, tr ("Tarif hazırlanıyor…"));
-
-            auto* t = new juce::DynamicObject();
-            juce::var tBody (t);
-            t->setProperty ("text", request.prompt);
-
-            juce::MemoryBlock tResponse;
-            int tStatus = 0;
-
-            if (httpPost (engineUrl ("/translate"), juce::JSON::toString (tBody, true),
-                          "Content-Type: application/json", 60000, tResponse, tStatus) && tStatus == 200)
-            {
-                const auto translated = juce::JSON::parse (tResponse.toString()).getProperty ("text", {}).toString();
-
-                if (translated.isNotEmpty())
-                    englishPrompt = translated;
-            }
+            englishPrompt = translateViaEngine (request.prompt);
+            englishNegative = translateViaEngine (request.negative);
         }
+
+        auto text = englishPrompt + (request.drum ? cloudSuffixDrum : cloudSuffixMelodic);
+
+        if (englishNegative.trim().isNotEmpty())
+            text << ", without " << englishNegative.trim();
 
         const int count = (int) request.seeds.size();
 
@@ -251,7 +347,7 @@ private:
 
             auto* obj = new juce::DynamicObject();
             juce::var body (obj);
-            obj->setProperty ("text", englishPrompt + cloudSuffix);
+            obj->setProperty ("text", text);
             obj->setProperty ("duration_seconds", (double) request.seconds);
             obj->setProperty ("prompt_influence", 0.3 + 0.7 * (double) request.strength);
 
@@ -312,10 +408,11 @@ WidiKeyProcessor::WidiKeyProcessor()
     formatManager.registerBasicFormats();
 
     for (int i = 0; i < 16; ++i)
-        synth.addVoice (new juce::SamplerVoice());
+        synth.addVoice (new widi::WidiVoice (voiceSettings));
 
-    filter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
+    synth.setNoteStealingEnabled (true);
     baseSeed = juce::Random::getSystemRandom().nextInt ({ 1000, 9999 });
+    apvts.addParameterListener ("mode", this);
 
     monitor = std::make_unique<EngineMonitor> (*this);
     monitor->startThread();
@@ -323,6 +420,9 @@ WidiKeyProcessor::WidiKeyProcessor()
 
 WidiKeyProcessor::~WidiKeyProcessor()
 {
+    apvts.removeParameterListener ("mode", this);
+    cancelPendingUpdate();
+
     if (monitor != nullptr)
         monitor->stopThread (3000);
 
@@ -347,6 +447,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout WidiKeyProcessor::createLayo
     cutoffRange.setSkewForCentre (1000.0f);
 
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
+
+    // v0.2'den gelenler (kimlikler değişmedi, eski projeler açılır)
     layout.add (std::make_unique<Param> (juce::ParameterID { "attack", 1 },    "Attack",   timeRange (0.001f, 5.0f), 0.005f, Attr().withStringFromValueFunction (formatSeconds)));
     layout.add (std::make_unique<Param> (juce::ParameterID { "decay", 1 },     "Decay",    timeRange (0.001f, 5.0f), 0.4f,   Attr().withStringFromValueFunction (formatSeconds)));
     layout.add (std::make_unique<Param> (juce::ParameterID { "sustain", 1 },   "Sustain",  juce::NormalisableRange<float> (0.0f, 1.0f), 1.0f, Attr().withStringFromValueFunction (formatPercent)));
@@ -355,12 +457,19 @@ juce::AudioProcessorValueTreeState::ParameterLayout WidiKeyProcessor::createLayo
     layout.add (std::make_unique<Param> (juce::ParameterID { "resonance", 1 }, "Rezonans", juce::NormalisableRange<float> (0.5f, 5.0f), 0.707f, Attr().withStringFromValueFunction (formatPlain)));
     layout.add (std::make_unique<Param> (juce::ParameterID { "reverb", 1 },    "Reverb",   juce::NormalisableRange<float> (0.0f, 1.0f), 0.25f, Attr().withStringFromValueFunction (formatPercent)));
     layout.add (std::make_unique<Param> (juce::ParameterID { "gain", 1 },      "Ses",      juce::NormalisableRange<float> (-24.0f, 12.0f), 0.0f, Attr().withStringFromValueFunction (formatDb)));
-
-    // Üretim ayarları
     layout.add (std::make_unique<Param> (juce::ParameterID { "length", 1 },   tr ("Süre"),  juce::NormalisableRange<float> (0.5f, 11.0f, 0.1f), 3.0f, Attr().withStringFromValueFunction (formatSeconds)));
     layout.add (std::make_unique<Param> (juce::ParameterID { "strength", 1 }, tr ("Tarife bağlılık"), juce::NormalisableRange<float> (0.0f, 1.0f), 0.0f, Attr().withStringFromValueFunction (formatPercent)));
     layout.add (std::make_unique<IntParam> (juce::ParameterID { "steps", 1 },      "Kalite",    4, 32, 8));
     layout.add (std::make_unique<IntParam> (juce::ParameterID { "variations", 1 }, "Varyasyon", 1, maxVariations, 4));
+
+    // v0.3 yenileri
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "mode", 1 }, "Mod", juce::StringArray { "Melodik", "Davul" }, 0));
+    layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "loop", 1 }, tr ("Döngü"), false));
+    layout.add (std::make_unique<Param> (juce::ParameterID { "velocity", 1 },   "Velocity",       juce::NormalisableRange<float> (0.0f, 1.0f), 0.3f, Attr().withStringFromValueFunction (formatPercent)));
+    layout.add (std::make_unique<Param> (juce::ParameterID { "glide", 1 },      "Glide",          timeRange (0.0f, 1.0f), 0.0f, Attr().withStringFromValueFunction (formatSeconds)));
+    layout.add (std::make_unique<Param> (juce::ParameterID { "fenvAmount", 1 }, tr ("Filtre zarfı"), juce::NormalisableRange<float> (0.0f, 5.0f), 0.0f, Attr().withStringFromValueFunction (formatOctaves)));
+    layout.add (std::make_unique<Param> (juce::ParameterID { "fenvDecay", 1 },  tr ("Zarf süresi"),  timeRange (0.01f, 3.0f), 0.3f, Attr().withStringFromValueFunction (formatSeconds)));
+    layout.add (std::make_unique<Param> (juce::ParameterID { "similarity", 1 }, "Benzerlik",      juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f, Attr().withStringFromValueFunction (formatPercent)));
     return layout;
 }
 
@@ -372,9 +481,7 @@ void WidiKeyProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     juce::dsp::ProcessSpec spec { sampleRate,
                                   (juce::uint32) samplesPerBlock,
                                   (juce::uint32) juce::jmax (1, getTotalNumOutputChannels()) };
-    filter.prepare (spec);
     reverb.prepare (spec);
-    filter.reset();
     reverb.reset();
     keyboardState.reset();
 }
@@ -393,24 +500,20 @@ void WidiKeyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
 
     keyboardState.processNextMidiBuffer (midi, 0, numSamples, true);
 
-    const juce::ADSR::Parameters env { apvts.getRawParameterValue ("attack")->load(),
-                                       apvts.getRawParameterValue ("decay")->load(),
-                                       apvts.getRawParameterValue ("sustain")->load(),
-                                       apvts.getRawParameterValue ("release")->load() };
-    {
-        const juce::ScopedTryLock sl (soundLock);
+    auto value = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
 
-        if (sl.isLocked())
-            if (auto* sampler = dynamic_cast<juce::SamplerSound*> (currentSound.get()))
-                sampler->setEnvelopeParameters (env);
-    }
+    voiceSettings.amp = { value ("attack"), value ("decay"), value ("sustain"), value ("release") };
+    voiceSettings.velocityAmount   = value ("velocity");
+    voiceSettings.glideSeconds     = value ("glide");
+    voiceSettings.loop             = value ("loop") > 0.5f;
+    voiceSettings.cutoff           = value ("cutoff");
+    voiceSettings.resonance        = value ("resonance");
+    voiceSettings.filterEnvOctaves = value ("fenvAmount");
+    voiceSettings.filterEnvDecay   = value ("fenvDecay");
 
     synth.renderNextBlock (buffer, midi, 0, numSamples);
 
-    filter.setCutoffFrequency (apvts.getRawParameterValue ("cutoff")->load());
-    filter.setResonance (apvts.getRawParameterValue ("resonance")->load());
-
-    const float mix = apvts.getRawParameterValue ("reverb")->load();
+    const float mix = value ("reverb");
     juce::dsp::Reverb::Parameters rp;
     rp.roomSize = 0.75f;
     rp.damping  = 0.4f;
@@ -421,14 +524,30 @@ void WidiKeyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
 
     juce::dsp::AudioBlock<float> block (buffer);
     juce::dsp::ProcessContextReplacing<float> context (block);
-    filter.process (context);
     reverb.process (context);
 
-    buffer.applyGain (juce::Decibels::decibelsToGain (apvts.getRawParameterValue ("gain")->load()));
+    buffer.applyGain (juce::Decibels::decibelsToGain (value ("gain")));
 }
 
 //==============================================================================
-void WidiKeyProcessor::startGeneration (const juce::String& prompt)
+void WidiKeyProcessor::parameterChanged (const juce::String& parameterID, float)
+{
+    if (parameterID == "mode")
+        triggerAsyncUpdate();
+}
+
+void WidiKeyProcessor::handleAsyncUpdate()
+{
+    rebuildSounds();
+}
+
+bool WidiKeyProcessor::isDrumMode() const
+{
+    return apvts.getRawParameterValue ("mode")->load() > 0.5f;
+}
+
+//==============================================================================
+void WidiKeyProcessor::startGeneration (const juce::String& prompt, const juce::String& negative, bool similarToSelected)
 {
     if (generator != nullptr && generator->isThreadRunning())
         return;
@@ -441,20 +560,35 @@ void WidiKeyProcessor::startGeneration (const juce::String& prompt)
         return;
     }
 
+    if (similarToSelected && engine.load() != Engine::local)
+    {
+        setStatus (Status::error, tr ("\"Benzerini üret\" sadece Yerel modda çalışır."));
+        return;
+    }
+
     {
         const juce::ScopedLock sl (dataLock);
         lastPrompt = cleaned;
+        lastNegative = negative.trim();
     }
+
+    PromptStore::addToHistory (cleaned);
 
     if (! seedLocked.load())
         rerollSeed();
 
     GenerateThread::Request request;
-    request.prompt   = cleaned;
-    request.engine   = engine.load();
-    request.seconds  = apvts.getRawParameterValue ("length")->load();
-    request.steps    = (int) apvts.getRawParameterValue ("steps")->load();
-    request.strength = apvts.getRawParameterValue ("strength")->load();
+    request.prompt     = cleaned;
+    request.negative   = negative.trim();
+    request.engine     = engine.load();
+    request.drum       = isDrumMode();
+    request.seconds    = apvts.getRawParameterValue ("length")->load();
+    request.steps      = (int) apvts.getRawParameterValue ("steps")->load();
+    request.strength   = apvts.getRawParameterValue ("strength")->load();
+    request.similarity = apvts.getRawParameterValue ("similarity")->load();
+
+    if (similarToSelected)
+        request.initAudio = selectedAsWav();
 
     const int count = juce::jlimit (1, maxVariations, (int) apvts.getRawParameterValue ("variations")->load());
 
@@ -492,51 +626,50 @@ std::unique_ptr<juce::AudioFormatReader> WidiKeyProcessor::createReader (const j
         formatManager.createReaderFor (std::make_unique<juce::MemoryInputStream> (bytes, true)));
 }
 
-bool WidiKeyProcessor::decodeVariation (Variation& variation, const juce::String& name, juce::String& error)
+bool WidiKeyProcessor::decodeVariation (Variation& variation, juce::String& error)
 {
     auto reader = createReader (variation.bytes);
 
-    if (reader == nullptr)
+    if (reader == nullptr || reader->sampleRate <= 0)
     {
         error = tr ("Gelen ses dosyası okunamadı.");
         return false;
     }
 
-    juce::BigInteger allNotes;
-    allNotes.setRange (0, 128, true);
+    const int length = (int) juce::jmin (reader->lengthInSamples, (juce::int64) (reader->sampleRate * 30.0));
+    const int channels = (int) juce::jlimit (1u, 2u, reader->numChannels);
 
-    auto* sound = new juce::SamplerSound (name, *reader, allNotes, rootNote, 0.005, 1.0, 30.0);
-    variation.sound = sound;
+    auto audio = std::make_shared<juce::AudioBuffer<float>> (channels, juce::jmax (1, length));
+    audio->clear();
+    reader->read (audio.get(), 0, length, 0, true, channels > 1);
+
+    variation.audio = audio;
+    variation.sourceRate = reader->sampleRate;
+    variation.seconds = length / reader->sampleRate;
+    variation.pitch = widi::detectPitch (*audio, reader->sampleRate);
     variation.peaks.assign (160, 0.0f);
-    variation.seconds = 0.0;
 
-    if (auto* audio = sound->getAudioData())
+    if (length > 0)
     {
-        const int length = audio->getNumSamples();
-        variation.seconds = reader->sampleRate > 0 ? length / reader->sampleRate : 0.0;
+        float maxPeak = 0.0f;
+        const auto count = variation.peaks.size();
 
-        if (length > 0)
+        for (size_t i = 0; i < count; ++i)
         {
-            float maxPeak = 0.0f;
-            const auto count = variation.peaks.size();
+            const int start = (int) ((i * (size_t) length) / count);
+            const int end   = juce::jmin (length, juce::jmax (start + 1, (int) (((i + 1) * (size_t) length) / count)));
+            float peak = 0.0f;
 
-            for (size_t i = 0; i < count; ++i)
-            {
-                const int start = (int) ((i * (size_t) length) / count);
-                const int end   = juce::jmin (length, juce::jmax (start + 1, (int) (((i + 1) * (size_t) length) / count)));
-                float peak = 0.0f;
+            for (int ch = 0; ch < channels; ++ch)
+                peak = juce::jmax (peak, audio->getMagnitude (ch, start, end - start));
 
-                for (int ch = 0; ch < audio->getNumChannels(); ++ch)
-                    peak = juce::jmax (peak, audio->getMagnitude (ch, start, end - start));
-
-                variation.peaks[i] = peak;
-                maxPeak = juce::jmax (maxPeak, peak);
-            }
-
-            if (maxPeak > 0.0f)
-                for (auto& p : variation.peaks)
-                    p /= maxPeak;
+            variation.peaks[i] = peak;
+            maxPeak = juce::jmax (maxPeak, peak);
         }
+
+        if (maxPeak > 0.0f)
+            for (auto& p : variation.peaks)
+                p /= maxPeak;
     }
 
     return true;
@@ -551,7 +684,7 @@ void WidiKeyProcessor::setVariations (std::vector<Variation>&& newVariations, co
         sampleName = name;
     }
 
-    applySelected();
+    rebuildSounds();
 }
 
 void WidiKeyProcessor::selectVariation (int index)
@@ -565,29 +698,49 @@ void WidiKeyProcessor::selectVariation (int index)
         selected = index;
     }
 
-    applySelected();
+    rebuildSounds();
 }
 
-void WidiKeyProcessor::applySelected()
+void WidiKeyProcessor::rebuildSounds()
 {
-    juce::SynthesiserSound::Ptr sound;
+    std::vector<juce::SynthesiserSound::Ptr> sounds;
+    const bool drum = isDrumMode();
 
     {
         const juce::ScopedLock sl (dataLock);
 
-        if (selected >= 0 && selected < (int) variations.size())
-            sound = variations[(size_t) selected].sound;
+        if (drum)
+        {
+            // Davul modu: her varyasyon kendi tuşunda, perdesi sabit (C, D, E, F)
+            for (size_t i = 0; i < variations.size() && i < 4; ++i)
+            {
+                juce::BigInteger notes;
+
+                for (int n = 0; n < 128; ++n)
+                    if (n % 12 == widi::drumNoteClasses[i])
+                        notes.setBit (n);
+
+                const auto& v = variations[i];
+                sounds.push_back (new widi::WidiSound (v.audio, v.sourceRate, 60.0, notes, true));
+            }
+        }
+        else if (selected >= 0 && selected < (int) variations.size())
+        {
+            // Melodik mod: seçili ses tüm klavyeye, gerçek notasına göre akortlu
+            juce::BigInteger notes;
+            notes.setRange (0, 128, true);
+
+            const auto& v = variations[(size_t) selected];
+            const double root = v.pitch.pitched ? v.pitch.midi : 60.0;
+            sounds.push_back (new widi::WidiSound (v.audio, v.sourceRate, root, notes, false));
+        }
     }
 
-    {
-        const juce::ScopedLock sl (soundLock);
-        currentSound = sound;
-    }
-
+    synth.allNotesOff (0, false);
     synth.clearSounds();
 
-    if (sound != nullptr)
-        synth.addSound (sound);
+    for (auto& s : sounds)
+        synth.addSound (s);
 
     ++sampleVersion;
 }
@@ -598,12 +751,13 @@ std::vector<WidiKeyProcessor::VariationInfo> WidiKeyProcessor::getVariationInfo(
     std::vector<VariationInfo> info;
 
     for (const auto& v : variations)
-        info.push_back ({ v.peaks, v.seconds, v.seed });
+        info.push_back ({ v.peaks, v.seconds, v.seed, v.pitch.pitched, v.pitch.midi });
 
     return info;
 }
 
 int WidiKeyProcessor::getSelectedVariation() const { const juce::ScopedLock sl (dataLock); return selected; }
+bool WidiKeyProcessor::hasSample() const          { const juce::ScopedLock sl (dataLock); return ! variations.empty(); }
 
 void WidiKeyProcessor::setStatus (Status newStatus, const juce::String& message)
 {
@@ -616,8 +770,134 @@ void WidiKeyProcessor::setStatus (Status newStatus, const juce::String& message)
 
 juce::String WidiKeyProcessor::getStatusMessage() const { const juce::ScopedLock sl (dataLock); return statusMessage; }
 juce::String WidiKeyProcessor::getPrompt() const        { const juce::ScopedLock sl (dataLock); return lastPrompt; }
+juce::String WidiKeyProcessor::getNegative() const      { const juce::ScopedLock sl (dataLock); return lastNegative; }
 juce::String WidiKeyProcessor::getSampleName() const    { const juce::ScopedLock sl (dataLock); return sampleName; }
 
+//==============================================================================
+juce::MemoryBlock WidiKeyProcessor::bufferToWav (const juce::AudioBuffer<float>& audio, double rate)
+{
+    juce::MemoryBlock block;
+    juce::WavAudioFormat wav;
+
+    std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::MemoryOutputStream> (block, false);
+    auto writer = wav.createWriterFor (stream, juce::AudioFormatWriterOptions{}
+                                                   .withSampleRate (rate)
+                                                   .withNumChannels (audio.getNumChannels())
+                                                   .withBitsPerSample (24));
+
+    if (writer != nullptr)
+        writer->writeFromAudioSampleBuffer (audio, 0, audio.getNumSamples());
+
+    writer.reset();
+    return block;
+}
+
+juce::MemoryBlock WidiKeyProcessor::selectedAsWav() const
+{
+    const juce::ScopedLock sl (dataLock);
+
+    if (selected < 0 || selected >= (int) variations.size())
+        return {};
+
+    const auto& v = variations[(size_t) selected];
+
+    if (v.bytes.getSize() > 4 && std::memcmp (v.bytes.getData(), "RIFF", 4) == 0)
+        return v.bytes;
+
+    return v.audio != nullptr ? bufferToWav (*v.audio, v.sourceRate) : juce::MemoryBlock();
+}
+
+juce::File WidiKeyProcessor::getLibraryFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userMusicDirectory)
+               .getChildFile ("widi-key").getChildFile (tr ("Kütüphane"));
+}
+
+juce::File WidiKeyProcessor::getExportFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userMusicDirectory)
+               .getChildFile ("widi-key").getChildFile (tr ("Dışa Aktarılanlar"));
+}
+
+juce::File WidiKeyProcessor::exportSelectedToWav()
+{
+    const auto wav = selectedAsWav();
+
+    if (wav.getSize() == 0)
+        return {};
+
+    auto folder = getExportFolder();
+    folder.createDirectory();
+
+    const auto letter = juce::String::charToString ((juce::juce_wchar) ('A' + getSelectedVariation()));
+    auto file = folder.getNonexistentChildFile (safeFileName (getSampleName()) + " " + letter, ".wav", false);
+
+    return file.replaceWithData (wav.getData(), wav.getSize()) ? file : juce::File();
+}
+
+bool WidiKeyProcessor::saveSelectedToLibrary (const juce::String& name)
+{
+    const auto wav = selectedAsWav();
+
+    if (wav.getSize() == 0)
+        return false;
+
+    auto folder = getLibraryFolder();
+    folder.createDirectory();
+
+    auto file = folder.getNonexistentChildFile (safeFileName (name), ".wav", false);
+
+    if (! file.replaceWithData (wav.getData(), wav.getSize()))
+        return false;
+
+    // Tarifi yanına not olarak kaydet
+    auto* obj = new juce::DynamicObject();
+    juce::var meta (obj);
+    obj->setProperty ("prompt", getPrompt());
+    obj->setProperty ("negative", getNegative());
+    file.withFileExtension ("json").replaceWithText (juce::JSON::toString (meta));
+    return true;
+}
+
+juce::Array<juce::File> WidiKeyProcessor::listLibrary()
+{
+    auto files = getLibraryFolder().findChildFiles (juce::File::findFiles, false, "*.wav");
+    std::sort (files.begin(), files.end(), [] (const juce::File& a, const juce::File& b)
+               { return a.getLastModificationTime() > b.getLastModificationTime(); });
+    return files;
+}
+
+bool WidiKeyProcessor::loadFromLibrary (const juce::File& file)
+{
+    Variation v;
+
+    if (! file.loadFileAsData (v.bytes))
+        return false;
+
+    juce::String error;
+
+    if (! decodeVariation (v, error))
+    {
+        setStatus (Status::error, error);
+        return false;
+    }
+
+    const auto meta = juce::JSON::parse (file.withFileExtension ("json"));
+
+    {
+        const juce::ScopedLock sl (dataLock);
+        lastPrompt = meta.getProperty ("prompt", lastPrompt).toString();
+        lastNegative = meta.getProperty ("negative", lastNegative).toString();
+    }
+
+    std::vector<Variation> list;
+    list.push_back (std::move (v));
+    setVariations (std::move (list), file.getFileNameWithoutExtension());
+    setStatus (Status::ok, {});
+    return true;
+}
+
+//==============================================================================
 juce::String WidiKeyProcessor::loadApiKey()
 {
     juce::PropertiesFile file (settingsOptions());
@@ -644,6 +924,7 @@ void WidiKeyProcessor::getStateInformation (juce::MemoryBlock& destData)
     {
         const juce::ScopedLock sl (dataLock);
         root.setProperty ("prompt", lastPrompt, nullptr);
+        root.setProperty ("negative", lastNegative, nullptr);
         root.setProperty ("name", sampleName, nullptr);
         root.setProperty ("selected", selected, nullptr);
 
@@ -686,6 +967,7 @@ void WidiKeyProcessor::setStateInformation (const void* data, int sizeInBytes)
     {
         const juce::ScopedLock sl (dataLock);
         lastPrompt = root["prompt"].toString();
+        lastNegative = root["negative"].toString();
     }
 
     std::vector<Variation> restored;
@@ -705,7 +987,7 @@ void WidiKeyProcessor::setStateInformation (const void* data, int sizeInBytes)
 
         juce::String error;
 
-        if (decodeVariation (v, name, error))
+        if (decodeVariation (v, error))
             restored.push_back (std::move (v));
     }
 
@@ -714,6 +996,10 @@ void WidiKeyProcessor::setStateInformation (const void* data, int sizeInBytes)
         const int wanted = (int) root.getProperty ("selected", 0);
         setVariations (std::move (restored), name);
         selectVariation (wanted);
+    }
+    else
+    {
+        rebuildSounds();
     }
 }
 

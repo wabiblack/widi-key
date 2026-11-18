@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PluginProcessor.h"
+#include "Common.h"
 
 class WidiLookAndFeel : public juce::LookAndFeel_V4
 {
@@ -18,23 +19,43 @@ public:
                                bool highlighted, bool down) override;
 
     juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
+
+    void fillTextEditorBackground (juce::Graphics&, int width, int height, juce::TextEditor&) override;
+    void drawTextEditorOutline (juce::Graphics&, int width, int height, juce::TextEditor&) override;
+
+    void drawPopupMenuBackground (juce::Graphics&, int width, int height) override;
 };
 
 //==============================================================================
+// İkonlu düğme (geçmiş, favori, kütüphane, ayarlar)
+class IconButton : public juce::Button
+{
+public:
+    enum class Icon { history, star, library, settings };
+
+    IconButton (Icon i, const juce::String& tooltip);
+    void paintButton (juce::Graphics&, bool highlighted, bool down) override;
+
+private:
+    Icon icon;
+};
+
 class WaveView : public juce::Component
 {
 public:
-    explicit WaveView (juce::AudioProcessorValueTreeState& state) : apvts (state) {}
+    explicit WaveView (WidiKeyProcessor& p) : proc (p) {}
 
     void setData (std::vector<float> newPeaks, double newSeconds) { peaks = std::move (newPeaks); seconds = newSeconds; repaint(); }
     void setBusy (bool b) { if (busy != b) { busy = b; repaint(); } }
     void paint (juce::Graphics&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
 
 private:
-    juce::AudioProcessorValueTreeState& apvts;
+    WidiKeyProcessor& proc;
     std::vector<float> peaks;
     double seconds = 0.0;
-    bool busy = false;
+    bool busy = false, dragging = false;
 };
 
 class VariationTile : public juce::Component
@@ -42,14 +63,16 @@ class VariationTile : public juce::Component
 public:
     std::function<void()> onPick;
 
-    void setData (int newIndex, const std::vector<float>& peaks, int newSeed, bool isSelected, bool isAvailable, bool isBusy);
+    void setData (int newIndex, const std::vector<float>& peaks, const juce::String& noteText,
+                  bool isSelected, bool isAvailable, bool isBusy, bool drumMode);
     void paint (juce::Graphics&) override;
     void mouseUp (const juce::MouseEvent&) override { if (available && onPick) onPick(); }
 
 private:
-    int index = 0, seed = -1;
+    int index = 0;
+    juce::String note;
     std::vector<float> mini;
-    bool selected = false, available = false, busy = false;
+    bool selected = false, available = false, busy = false, drum = false;
 };
 
 class LcdDisplay : public juce::Component
@@ -79,7 +102,7 @@ private:
 class Knob : public juce::Component
 {
 public:
-    Knob (juce::AudioProcessorValueTreeState&, const juce::String& paramId, const juce::String& name);
+    Knob (juce::AudioProcessorValueTreeState&, const juce::String& paramId, const juce::String& name, const juce::String& tip);
     void paint (juce::Graphics&) override;
     void resized() override;
 
@@ -90,14 +113,29 @@ private:
     juce::String name;
 };
 
+class ModernKeyboard : public juce::MidiKeyboardComponent
+{
+public:
+    ModernKeyboard (juce::MidiKeyboardState& state, std::function<bool()> drumModeQuery)
+        : juce::MidiKeyboardComponent (state, horizontalKeyboard), isDrumMode (std::move (drumModeQuery)) {}
+
+    void drawWhiteNote (int midiNoteNumber, juce::Graphics&, juce::Rectangle<float> area, bool isDown, bool isOver,
+                        juce::Colour lineColour, juce::Colour textColour) override;
+    void drawBlackNote (int midiNoteNumber, juce::Graphics&, juce::Rectangle<float> area, bool isDown, bool isOver,
+                        juce::Colour noteFillColour) override;
+
+private:
+    std::function<bool()> isDrumMode;
+};
+
 //==============================================================================
-// Asıl arayüz: sabit 820×540 tasarlanır, editör bunu ölçekler.
+// Asıl arayüz: sabit 900×600 tasarlanır, editör bunu ölçekler.
 class MainView : public juce::Component,
                  private juce::Timer
 {
 public:
-    static constexpr int designWidth = 820;
-    static constexpr int designHeight = 540;
+    static constexpr int designWidth = 900;
+    static constexpr int designHeight = 600;
 
     explicit MainView (WidiKeyProcessor&);
     ~MainView() override;
@@ -108,19 +146,27 @@ public:
 
 private:
     void timerCallback() override;
-    void generate();
+    void generate (bool similar);
     void openSettings();
-    void refreshEngineButtons();
+    void showHistoryMenu();
+    void showLibraryMenu();
+    void askLibraryName();
+    void setMode (bool drum);
+    void refreshFavorites();
 
     WidiKeyProcessor& proc;
     juce::Typeface::Ptr serif;
 
     juce::Label title, madeIn;
     LcdDisplay lcd;
-    juce::TextButton cloudButton, localButton, settingsButton;
+    juce::TextButton melodicButton, drumButton, cloudButton, localButton;
+    IconButton libraryButton { IconButton::Icon::library, widi::tr ("Kütüphane ve dışa aktarma") };
+    IconButton settingsButton { IconButton::Icon::settings, widi::tr ("Ayarlar") };
 
-    juce::TextEditor promptBox;
-    juce::TextButton generateButton;
+    IconButton historyButton { IconButton::Icon::history, widi::tr ("Tarif geçmişi ve favoriler") };
+    IconButton favoriteButton { IconButton::Icon::star, widi::tr ("Bu tarifi favorilere ekle") };
+    juce::TextEditor promptBox, negativeBox;
+    juce::TextButton generateButton, similarButton;
 
     WaveView wave;
     VariationTile tiles[WidiKeyProcessor::maxVariations];
@@ -130,11 +176,15 @@ private:
     juce::TextButton lockButton, newSeedButton;
 
     juce::OwnedArray<Knob> knobs;
-    juce::MidiKeyboardComponent keyboard;
+    juce::TextButton loopButton;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> loopAttachment;
+    ModernKeyboard keyboard;
 
-    juce::Rectangle<int> logoArea, panelRect, knobStrip, keysRect;
-    juce::Rectangle<int> groupRects[3];
+    juce::Rectangle<int> logoArea, panelRect, knobStrip, keysRect, negIconArea;
+    juce::Rectangle<int> groupRects[4];
+    juce::StringArray favorites;
     int lastVersion = -1;
+    bool lastDrum = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainView)
 };

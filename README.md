@@ -31,11 +31,20 @@ Kaldırmak için: `curl -fsSL https://raw.githubusercontent.com/wabiblack/widi-k
 
 ## Kullanım
 
+**v0.3 yenilikleri:** gerçek nota tespiti (akort), Davul modu, döngü, velocity, glide, filtre zarfı, "istemediğin" kutusu, "benzerini üret", tarif geçmişi ve favoriler, kütüphane, Logic'e sürükle-bırak.
+
 - Tarifi Türkçe yaz, örneğin `tozlu bir müzik kutusu, tek nota`. **Üret**'e basınca tarif arka planda İngilizceye çevrilir. Çeviri sende görünmez, model daha doğru tarif almış olur. Bulut modunda bu çeviri için de yerel motorun açık olması gerekir.
 - Her üretimde 1–4 varyasyon gelir (A/B/C/D). Beğendiğine tıkla, klavyeye o yayılır.
 - **Seed kilidi** açıkken her üretim yepyeni sonuçlar verir. Kilitliyken aynı sesin üzerinde kalite, süre ve tarif değiştirerek oynayabilirsin.
 - **Kalite** (adım sayısı) yükseldikçe ses temizleşir ama üretim yavaşlar. **Tarife bağlılık** yükseldikçe sonuç tarife daha sıkı uyar.
 - Zarf (Attack/Decay/Sustain/Release), filtre ve reverb notaya basınca anında etkiler, yeniden üretmek gerekmez.
+- **Melodik / Davul:** Melodik modda ses gerçek notası bulunup klavyeye akortlu yayılır. Davul modunda 4 varyasyon C, D, E, F tuşlarına (her oktavda) oturur ve perdesi değişmez.
+- **İstemediğin kutusu:** "davul, gürültü" gibi istemediğin şeyleri yaz.
+- **Benzerini üret:** Seçili sesi temel alıp benzer yeni varyasyonlar üretir (Yerel). Ne kadar benzeyeceğini "Benzerlik" belirler.
+- **Geçmiş ve favoriler:** Tarif kutusunun solundaki saat ikonu geçmişi, sağındaki yıldız favoriyi açar.
+- **Kütüphane:** Sağ üstteki klasör ikonu. Sesler `~/Music/widi-key/Kütüphane` klasörüne kaydedilir.
+- **Logic'e sürükle:** Dalga formunu tutup Logic'teki bir kanala sürükle, WAV olarak düşer. Tıklarsan ses çalar.
+- **Döngü:** Pad gibi uzun seslerde tuş basılıyken ses bitmez.
 - Pencereyi sağ alt köşesinden büyütüp küçültebilirsin.
 - Bulut modu ElevenLabs API anahtarı ister ve her varyasyon ayrı kredi harcar.
 
