@@ -59,6 +59,8 @@ private:
     void setStatus (Status newStatus, const juce::String& message);
 
     juce::Synthesiser synth;
+    juce::CriticalSection soundLock;
+    juce::SynthesiserSound::Ptr currentSound;
     juce::AudioFormatManager formatManager;
     juce::dsp::StateVariableTPTFilter<float> filter;
     juce::dsp::Reverb reverb;

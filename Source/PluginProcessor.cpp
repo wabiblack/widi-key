@@ -206,10 +206,10 @@ void WidiKeyProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
                                        apvts.getRawParameterValue ("sustain")->load(),
                                        apvts.getRawParameterValue ("release")->load() };
     {
-        const juce::ScopedLock sl (synth.getLock());
+        const juce::ScopedTryLock sl (soundLock);
 
-        if (auto sound = synth.getSound (0))
-            if (auto* sampler = dynamic_cast<juce::SamplerSound*> (sound.get()))
+        if (sl.isLocked())
+            if (auto* sampler = dynamic_cast<juce::SamplerSound*> (currentSound.get()))
                 sampler->setEnvelopeParameters (env);
     }
 
@@ -317,8 +317,15 @@ bool WidiKeyProcessor::loadSampleFromBytes (const juce::MemoryBlock& bytes, cons
         }
     }
 
+    juce::SynthesiserSound::Ptr soundPtr (sound);
+
+    {
+        const juce::ScopedLock sl (soundLock);
+        currentSound = soundPtr;
+    }
+
     synth.clearSounds();
-    synth.addSound (sound);
+    synth.addSound (soundPtr);
 
     {
         const juce::ScopedLock sl (dataLock);
