@@ -8,7 +8,7 @@ ENGINE_DIR="$APP_DIR/engine"
 ENV_DIR="$ENGINE_DIR/env"
 LABEL="com.wabiblack.widikey.engine"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-RAW="https://raw.githubusercontent.com/wabiblack/widi-key/0f5b3b9/engine"
+RAW="https://raw.githubusercontent.com/wabiblack/widi-key/945353e/engine"
 
 say() { printf "\n\033[1;36m==> %s\033[0m\n" "$1"; }
 
