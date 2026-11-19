@@ -135,34 +135,107 @@ def load_translator():
 # Çeviri
 # --------------------------------------------------------------------------- #
 _TR_CHARS = re.compile(r"[çğıöşüÇĞİÖŞÜ]")
-_TR_WORDS = {
-    "bir", "ve", "ile", "gibi", "ses", "sesi", "nota", "tek", "sicak", "eski", "tozlu",
-    "yumusak", "sert", "derin", "parlak", "karanlik", "uzun", "kisa", "davul", "piyano",
-    "gitar", "bas", "can", "ruzgar", "su", "yagmur", "kutusu", "muzik", "icin", "cok",
-    "az", "hafif", "agir", "metal", "cam", "tahta", "zil", "dalga", "yankili", "boguk",
-    "tiz", "kalin", "ince", "vurus", "efekt", "korkunc", "neseli", "huzunlu", "uzay",
+
+# Çeviriden önce doğrudan değiştirilen müzik terimleri (Türkçe -> İngilizce).
+# Çeviri modeli tek kelimelik enstrüman adlarında yanılabildiği için bunları garantiye alıyoruz.
+_GLOSSARY = {
+    # Telli / yaylı
+    "keman": "violin", "kemanı": "violin", "kemanlar": "violins", "viyola": "viola",
+    "çello": "cello", "viyolonsel": "cello", "kontrbas": "double bass", "arp": "harp",
+    "gitar": "guitar", "gitarı": "guitar", "elektro gitar": "electric guitar",
+    "akustik gitar": "acoustic guitar", "bas gitar": "bass guitar", "bağlama": "baglama saz",
+    "saz": "baglama saz", "ud": "oud", "kanun": "qanun zither", "kemençe": "kemenche fiddle",
+    "mandolin": "mandolin", "banjo": "banjo", "yaylılar": "strings", "yaylı": "string",
+    # Üflemeli
+    "flüt": "flute", "ney": "ney flute", "kaval": "kaval flute", "zurna": "zurna",
+    "klarnet": "clarinet", "saksafon": "saxophone", "trompet": "trumpet", "trombon": "trombone",
+    "korno": "french horn", "obua": "oboe", "fagot": "bassoon", "tuba": "tuba",
+    "mızıka": "harmonica", "akordeon": "accordion", "gayda": "bagpipe", "tulum": "bagpipe",
+    # Tuşlu
+    "piyano": "piano", "piyanosu": "piano", "kuyruklu piyano": "grand piano", "org": "organ",
+    "kilise orgu": "church organ", "klavsen": "harpsichord", "elektrik piyano": "electric piano",
+    # Vurmalı
+    "davul": "drum", "davulu": "drum", "darbuka": "darbuka", "def": "frame drum", "bendir": "bendir frame drum",
+    "zil": "cymbal", "ziller": "cymbals", "çan": "bell", "çanı": "bell", "çanlar": "bells",
+    "kampana": "bell", "gong": "gong", "ksilofon": "xylophone", "marimba": "marimba",
+    "vibrafon": "vibraphone", "glockenspiel": "glockenspiel", "trampet": "snare drum",
+    "bateri": "drum kit", "kös": "kettle drum", "timpani": "timpani", "tef": "tambourine",
+    "kaşık": "wooden spoons percussion", "el çırpma": "hand clap", "alkış": "clapping",
+    # Ses türleri
+    "vokal": "vocal", "koro": "choir", "insan sesi": "human voice", "fısıltı": "whisper",
+    "müzik kutusu": "music box", "synth": "synth", "sentezleyici": "synthesizer",
+    "bas": "bass", "kalın bas": "deep bass", "pad": "pad", "nota": "note", "tek nota": "single note",
+    "akor": "chord", "arpej": "arpeggio", "vuruş": "hit", "darbe": "impact",
+}
+_GLOSSARY_PATTERN = re.compile(
+    r"(?<![\wçğıöşü])(" + "|".join(sorted((re.escape(k) for k in _GLOSSARY), key=len, reverse=True)) + r")(?![\wçğıöşü])",
+    re.IGNORECASE,
+)
+
+# Tarifin zaten İngilizce olduğunu anlamak için sık kullanılan İngilizce kelimeler
+_EN_WORDS = {
+    "a", "an", "the", "of", "with", "and", "or", "in", "on", "no", "without", "very", "like", "for",
+    "single", "note", "notes", "one", "shot", "hit", "loop", "sound", "sounds", "tone", "chord",
+    "warm", "dark", "bright", "deep", "soft", "hard", "heavy", "light", "dusty", "old", "vintage",
+    "clean", "dirty", "distorted", "lofi", "lo", "fi", "ambient", "cinematic", "epic", "sad", "happy",
+    "short", "long", "sustained", "plucked", "bowed", "muted", "airy", "breathy", "metallic", "wooden",
+    "glass", "crystal", "analog", "digital", "retro", "futuristic", "huge", "small", "big", "low", "high",
+    "drum", "drums", "kick", "snare", "hat", "hihat", "clap", "cymbal", "tom", "percussion", "808", "909",
+    "bass", "sub", "synth", "pad", "lead", "pluck", "keys", "piano", "organ", "guitar", "violin", "viola",
+    "cello", "strings", "string", "flute", "horn", "brass", "trumpet", "sax", "choir", "vocal", "voice",
+    "bell", "bells", "box", "music", "harp", "marimba", "xylophone", "trap", "house", "techno", "jazz",
+    "reverb", "echo", "delay", "noise", "texture", "riser", "impact", "whoosh", "swell", "rain", "wind",
 }
 
 
-def looks_turkish(text):
+def _norm(word):
+    return word.lower().replace("i\u0307", "i").replace("ı", "i")
+
+
+# "kalin bas" gibi Türkçe harfsiz yazımlar da eşleşsin diye normalleştirilmiş anahtarlar
+_GLOSSARY_NORM = {_norm(k): v for k, v in _GLOSSARY.items()}
+
+
+def apply_glossary(text):
+    return _GLOSSARY_PATTERN.sub(lambda m: _GLOSSARY_NORM.get(_norm(m.group(0)), m.group(0)), text)
+
+
+def looks_english(text, threshold=0.6):
     if _TR_CHARS.search(text):
+        return False
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    if not words:
         return True
-    words = re.findall(r"[a-z]+", text.lower())
-    return any(w in _TR_WORDS for w in words)
+    known = sum(w in _EN_WORDS or w.isdigit() for w in words)
+    return known / len(words) >= threshold
+
+
+def looks_turkish(text):
+    return not looks_english(text)
 
 
 def translate(text):
     text = (text or "").strip()
-    if not text or not looks_turkish(text):
+    if not text or looks_english(text):
         return text
+
+    # Önce müzik terimlerini doğrudan değiştir
+    prepared = apply_glossary(text)
+
+    # Sözlükten sonra metin tamamen İngilizce olduysa çeviri modeline gerek yok
+    if looks_english(prepared, threshold=1.0):
+        print(f"Tarif: {text!r} -> {prepared!r} (sözlük)", flush=True)
+        return prepared
 
     import torch
 
     tokenizer, model = load_translator()
     with torch.no_grad():
-        batch = tokenizer([text], return_tensors="pt", padding=True, truncation=True, max_length=256)
+        batch = tokenizer([prepared], return_tensors="pt", padding=True, truncation=True, max_length=256)
         output = model.generate(**batch, num_beams=5, max_new_tokens=128)
-    return tokenizer.decode(output[0], skip_special_tokens=True).strip()
+    result = tokenizer.decode(output[0], skip_special_tokens=True).strip()
+    print(f"Tarif: {text!r} -> {result!r}", flush=True)
+    return result
 
 
 # --------------------------------------------------------------------------- #
