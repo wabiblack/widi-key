@@ -38,6 +38,8 @@ Kaldırmak için: `curl -fsSL https://raw.githubusercontent.com/wabiblack/widi-k
 - **Seed kilidi** açıkken her üretim yepyeni sonuçlar verir. Kilitliyken aynı sesin üzerinde kalite, süre ve tarif değiştirerek oynayabilirsin.
 - **Kalite** (adım sayısı) yükseldikçe ses temizleşir ama üretim yavaşlar. **Tarife bağlılık** yükseldikçe sonuç tarife daha sıkı uyar.
 - Zarf (Attack/Decay/Sustain/Release), filtre ve reverb notaya basınca anında etkiler, yeniden üretmek gerekmez.
+- **Çoklu (en gerçekçisi, varsayılan):** Varyasyonlar kalından inceye farklı notalarda üretilir, her tuş kendisine en yakın kaydı çalar. Gerçek sample kütüphaneleri gibi; ses fazla gerilmediği için akustik enstrümanlar çok daha doğal duyulur. Klavyedeki yeşil noktalar kayıtların yerini gösterir.
+- **Gerçekçilik:** Keman, piyano, flüt gibi akustik enstrümanlarda tarife otomatik olarak "gerçek kayıt, doğal oda, yakın mikrofon" eklenir.
 - **Melodik / Davul:** Melodik modda ses gerçek notası bulunup klavyeye akortlu yayılır. Davul modunda 4 varyasyon C, D, E, F tuşlarına (her oktavda) oturur ve perdesi değişmez.
 - **İstemediğin kutusu:** "davul, gürültü" gibi istemediğin şeyleri yaz.
 - **Benzerini üret:** Seçili sesi temel alıp benzer yeni varyasyonlar üretir (Yerel). Ne kadar benzeyeceğini "Benzerlik" belirler.

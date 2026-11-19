@@ -196,6 +196,31 @@ def _norm(word):
 _GLOSSARY_NORM = {_norm(k): v for k, v in _GLOSSARY.items()}
 
 
+_ACOUSTIC = [
+    "violin", "viola", "cello", "double bass", "contrabass", "harp", "acoustic guitar", "classical guitar",
+    "guitar", "piano", "grand piano", "upright piano", "flute", "clarinet", "oboe", "bassoon", "saxophone",
+    "sax", "trumpet", "trombone", "french horn", "horn", "tuba", "harmonica", "accordion", "bagpipe", "organ",
+    "harpsichord", "oud", "qanun", "zither", "baglama", "saz", "ney", "kaval", "zurna", "kemenche", "fiddle",
+    "mandolin", "banjo", "marimba", "xylophone", "vibraphone", "glockenspiel", "bell", "bells", "music box",
+    "choir", "strings", "string", "orchestra", "orchestral", "darbuka", "frame drum", "bendir", "tambourine",
+    "timpani", "cymbal", "snare drum", "drum kit", "acoustic drum", "hand clap", "celesta", "kalimba", "sitar",
+]
+_SYNTHETIC = ["synth", "synthesizer", "electronic", "808", "909", "analog", "digital", "electric", "chiptune",
+              "8-bit", "8 bit", "distorted", "glitch", "lofi", "lo-fi", "bass synth", "pad", "riser", "fx"]
+
+
+def realism_suffix(prompt_en, drum=False):
+    """Akustik enstrümanlarda modeli gerçek kayıt gibi üretmeye yönlendiren ek."""
+    text = (prompt_en or "").lower()
+    if any(word in text for word in _SYNTHETIC):
+        return ""
+    if not any(re.search(r"\b" + re.escape(word) + r"\b", text) for word in _ACOUSTIC):
+        return ""
+    if drum:
+        return ", real acoustic recording, natural room sound, close microphone"
+    return ", real acoustic instrument, natural studio recording, close microphone, warm room ambience, expressive performance"
+
+
 def apply_glossary(text):
     return _GLOSSARY_PATTERN.sub(lambda m: _GLOSSARY_NORM.get(_norm(m.group(0)), m.group(0)), text)
 
@@ -312,7 +337,10 @@ def generate(request):
     seeds = [int(s) % 4294967000 for s in request.get("seeds", [])][:4] or [12345]
 
     prompt_en = translate(request.get("prompt", ""))
-    full_prompt = prompt_en + request.get("suffix", "")
+    realism = realism_suffix(prompt_en, drum=bool(request.get("drum", False)))
+    base_prompt = prompt_en + realism + request.get("suffix", "")
+    per_seed = request.get("suffixes") or []
+    print(f"Üretim: {base_prompt!r} · {len(seeds)} kayıt", flush=True)
 
     # "İstemediğin" kutusu: negatif tarif yalnızca CFG > 1 iken etkili
     negative_en = translate(request.get("negative", ""))
@@ -329,7 +357,7 @@ def generate(request):
     similarity = max(0.0, min(1.0, float(request.get("similarity", 0.5))))
     init_noise_level = 1.0 - 0.75 * similarity
 
-    def run(current_model, seed):
+    def run(current_model, seed, full_prompt):
         kwargs = dict(
             steps=steps,
             cfg_scale=cfg_scale,
@@ -357,9 +385,10 @@ def generate(request):
                 return generate_diffusion_cond(current_model, **kwargs)
 
     clips = []
-    for seed in seeds:
+    for index, seed in enumerate(seeds):
+        full_prompt = base_prompt + (per_seed[index] if index < len(per_seed) else "")
         try:
-            output = run(model, seed)
+            output = run(model, seed, full_prompt)
         except (TypeError, RuntimeError) as exc:
             if _state["device"] != "mps":
                 raise
@@ -368,7 +397,7 @@ def generate(request):
                 model = model.to("cpu")
                 _state["audio"] = (model, config)
                 _state["device"] = "cpu"
-            output = run(model, seed)
+            output = run(model, seed, full_prompt)
 
         audio = rearrange(output, "b d n -> d (b n)").to(torch.float32).cpu()
         audio = audio[:, : int(seconds * sample_rate)]
@@ -412,7 +441,9 @@ class Handler(BaseHTTPRequestHandler):
 
             if self.path.startswith("/translate"):
                 with _work_lock:
-                    self._send(200, {"text": translate(request.get("text", ""))})
+                    text_en = translate(request.get("text", ""))
+                    self._send(200, {"text": text_en,
+                                     "realism": realism_suffix(text_en, drum=bool(request.get("drum", False)))})
             elif self.path.startswith("/generate"):
                 with _work_lock:
                     self._send(200, generate(request))

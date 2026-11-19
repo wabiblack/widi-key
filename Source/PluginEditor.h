@@ -119,13 +119,19 @@ public:
     ModernKeyboard (juce::MidiKeyboardState& state, std::function<bool()> drumModeQuery)
         : juce::MidiKeyboardComponent (state, horizontalKeyboard), isDrumMode (std::move (drumModeQuery)) {}
 
+    // Çoklu örnekte kayıtların kök notaları (tuş üzerinde işaretlenir)
+    void setRootMarkers (std::vector<int> notes) { if (notes != rootMarkers) { rootMarkers = std::move (notes); repaint(); } }
+
     void drawWhiteNote (int midiNoteNumber, juce::Graphics&, juce::Rectangle<float> area, bool isDown, bool isOver,
                         juce::Colour lineColour, juce::Colour textColour) override;
     void drawBlackNote (int midiNoteNumber, juce::Graphics&, juce::Rectangle<float> area, bool isDown, bool isOver,
                         juce::Colour noteFillColour) override;
 
 private:
+    void drawMarker (juce::Graphics&, int midiNoteNumber, juce::Rectangle<float> area, bool isDown);
+
     std::function<bool()> isDrumMode;
+    std::vector<int> rootMarkers;
 };
 
 //==============================================================================
@@ -151,7 +157,7 @@ private:
     void showHistoryMenu();
     void showLibraryMenu();
     void askLibraryName();
-    void setMode (bool drum);
+    void setMode (int mode);
     void refreshFavorites();
 
     WidiKeyProcessor& proc;
@@ -159,7 +165,7 @@ private:
 
     juce::Label title, madeIn;
     LcdDisplay lcd;
-    juce::TextButton melodicButton, drumButton, cloudButton, localButton;
+    juce::TextButton melodicButton, multiButton, drumButton, cloudButton, localButton;
     IconButton libraryButton { IconButton::Icon::library, widi::tr ("Kütüphane ve dışa aktarma") };
     IconButton settingsButton { IconButton::Icon::settings, widi::tr ("Ayarlar") };
 
@@ -184,7 +190,7 @@ private:
     juce::Rectangle<int> groupRects[4];
     juce::StringArray favorites;
     int lastVersion = -1;
-    bool lastDrum = false;
+    int lastMode = -1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainView)
 };

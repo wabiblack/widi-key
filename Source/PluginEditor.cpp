@@ -290,8 +290,9 @@ void WaveView::paint (juce::Graphics& g)
     auto top = getLocalBounds().reduced (12, 8).removeFromTop (12);
     g.setFont (uiFont (10.0f));
     g.setColour (col::dim);
-    g.drawText (proc.isDrumMode() ? tr ("DAVUL MODU · A=C  B=D  C=E  D=F (her oktavda)")
-                                  : tr ("SEÇİLİ SES · gerçek notasına göre klavyeye yayıldı"),
+    g.drawText (proc.isDrumMode()  ? tr ("DAVUL MODU · A=C  B=D  C=E  D=F (her oktavda)")
+              : proc.isMultiMode() ? tr ("ÇOKLU ÖRNEK · her tuş kendisine en yakın kaydı çalar")
+                                   : tr ("SEÇİLİ SES · gerçek notasına göre klavyeye yayıldı"),
                 top, juce::Justification::centredLeft);
 
     if (! proc.isDrumMode())
@@ -551,6 +552,8 @@ void ModernKeyboard::drawWhiteNote (int midiNoteNumber, juce::Graphics& g, juce:
         g.fillPath (key);
     }
 
+    drawMarker (g, midiNoteNumber, r, isDown);
+
     const int noteClass = midiNoteNumber % 12;
     const bool drum = isDrumMode != nullptr && isDrumMode();
     auto label = r.removeFromBottom (18.0f);
@@ -575,7 +578,17 @@ void ModernKeyboard::drawWhiteNote (int midiNoteNumber, juce::Graphics& g, juce:
     }
 }
 
-void ModernKeyboard::drawBlackNote (int, juce::Graphics& g, juce::Rectangle<float> area, bool isDown, bool isOver, juce::Colour)
+void ModernKeyboard::drawMarker (juce::Graphics& g, int midiNoteNumber, juce::Rectangle<float> area, bool isDown)
+{
+    if (std::find (rootMarkers.begin(), rootMarkers.end(), midiNoteNumber) == rootMarkers.end())
+        return;
+
+    const auto dot = juce::Rectangle<float> (6.0f, 6.0f).withCentre ({ area.getCentreX(), area.getY() + 10.0f });
+    g.setColour (isDown ? col::onAccent : col::accent);
+    g.fillEllipse (dot);
+}
+
+void ModernKeyboard::drawBlackNote (int midiNoteNumber, juce::Graphics& g, juce::Rectangle<float> area, bool isDown, bool isOver, juce::Colour)
 {
     const auto r = area.reduced (1.5f, 0.0f);
     juce::Path key;
@@ -596,6 +609,8 @@ void ModernKeyboard::drawBlackNote (int, juce::Graphics& g, juce::Rectangle<floa
 
     g.setColour (juce::Colours::white.withAlpha (isDown ? 0.0f : 0.08f));
     g.fillRoundedRectangle (r.getX() + 2.0f, r.getBottom() - 8.0f, r.getWidth() - 4.0f, 3.0f, 1.5f);
+
+    drawMarker (g, midiNoteNumber, r, isDown);
 }
 
 //==============================================================================
@@ -628,10 +643,12 @@ MainView::MainView (WidiKeyProcessor& p)
         addAndMakeVisible (b);
     };
 
-    setupSegment (melodicButton, tr ("Melodik"), tr ("Ses tüm klavyeye, gerçek notasına göre akortlu yayılır"), 2001);
+    setupSegment (melodicButton, tr ("Melodik"), tr ("Seçtiğin tek ses tüm klavyeye, gerçek notasına göre akortlu yayılır"), 2001);
+    setupSegment (multiButton, tr ("Çoklu"), tr ("En gerçekçisi: varyasyonlar kalından inceye farklı notalarda üretilir, her tuş kendisine en yakın kaydı çalar. Akustik enstrümanlar için ideal."), 2001);
     setupSegment (drumButton, tr ("Davul"), tr ("Her varyasyon ayrı bir tuşa oturur (C, D, E, F), perdesi değişmez"), 2001);
-    melodicButton.onClick = [this] { setMode (false); };
-    drumButton.onClick    = [this] { setMode (true); };
+    melodicButton.onClick = [this] { setMode (0); };
+    multiButton.onClick   = [this] { setMode (2); };
+    drumButton.onClick    = [this] { setMode (1); };
 
     setupSegment (cloudButton, tr ("Bulut"), tr ("ElevenLabs ile bulutta üretir. API anahtarı ister, her varyasyon kredi harcar."), 1001);
     setupSegment (localButton, tr ("   Yerel"), tr ("Mac'inde internetsiz ve limitsiz üretir. Nokta yeşilse motor çalışıyor."), 1001);
@@ -682,7 +699,13 @@ MainView::MainView (WidiKeyProcessor& p)
 
     for (int i = 0; i < WidiKeyProcessor::maxVariations; ++i)
     {
-        tiles[i].onPick = [this, i] { proc.selectVariation (i); };
+        tiles[i].onPick = [this, i]
+        {
+            if (proc.isMultiMode() || proc.isDrumMode())
+                proc.previewVariation (i);
+            else
+                proc.selectVariation (i);
+        };
         addAndMakeVisible (tiles[i]);
     }
 
@@ -770,12 +793,12 @@ MainView::~MainView()
     stopTimer();
 }
 
-void MainView::setMode (bool drum)
+void MainView::setMode (int mode)
 {
     if (auto* param = proc.apvts.getParameter ("mode"))
     {
         param->beginChangeGesture();
-        param->setValueNotifyingHost (drum ? 1.0f : 0.0f);
+        param->setValueNotifyingHost (param->convertTo0to1 ((float) mode));
         param->endChangeGesture();
     }
 
@@ -826,7 +849,9 @@ void MainView::paint (juce::Graphics& g)
     g.setFont (uiFont (10.0f));
     g.setColour (col::dim);
     g.drawText (tr ("VARYASYONLAR"), header, juce::Justification::centredLeft);
-    g.drawText (proc.isDrumMode() ? tr ("Davul modunda hepsi aynı anda çalınabilir") : tr ("Beğendiğine tıkla, klavyeye o yayılır"),
+    g.drawText (proc.isDrumMode()  ? tr ("Davul modunda hepsi aynı anda çalınabilir")
+              : proc.isMultiMode() ? tr ("Hepsi birlikte tek enstrüman · dinlemek için tıkla")
+                                   : tr ("Beğendiğine tıkla, klavyeye o yayılır"),
                 header.withTrimmedRight (similarButton.getWidth() + 8), juce::Justification::centredRight);
 
     // Üretim ayarları kartı
@@ -889,8 +914,9 @@ void MainView::resized()
     libraryButton.setBounds (settingsButton.getX() - 8 - 32, 9, 32, 30);
     localButton.setBounds (libraryButton.getX() - 14 - 72, 12, 72, 24);
     cloudButton.setBounds (localButton.getX() - 58, 12, 58, 24);
-    drumButton.setBounds (cloudButton.getX() - 16 - 60, 12, 60, 24);
-    melodicButton.setBounds (drumButton.getX() - 70, 12, 70, 24);
+    drumButton.setBounds (cloudButton.getX() - 16 - 56, 12, 56, 24);
+    multiButton.setBounds (drumButton.getX() - 56, 12, 56, 24);
+    melodicButton.setBounds (multiButton.getX() - 66, 12, 66, 24);
     lcd.setBounds (170, 11, melodicButton.getX() - 14 - 170, 26);
 
     // --- Tarif ---
@@ -973,11 +999,14 @@ void MainView::timerCallback()
     const auto status = proc.getStatus();
     const bool working = status == WidiKeyProcessor::Status::working;
     const bool drum = proc.isDrumMode();
+    const bool multi = proc.isMultiMode();
+    const int mode = drum ? 1 : (multi ? 2 : 0);
     const bool local = proc.getEngine() == WidiKeyProcessor::Engine::local;
     const int count = (int) proc.apvts.getRawParameterValue ("variations")->load();
 
-    melodicButton.setToggleState (! drum, juce::dontSendNotification);
-    drumButton.setToggleState (drum, juce::dontSendNotification);
+    melodicButton.setToggleState (mode == 0, juce::dontSendNotification);
+    multiButton.setToggleState (mode == 2, juce::dontSendNotification);
+    drumButton.setToggleState (mode == 1, juce::dontSendNotification);
     cloudButton.setToggleState (! local, juce::dontSendNotification);
     localButton.setToggleState (local, juce::dontSendNotification);
 
@@ -994,10 +1023,19 @@ void MainView::timerCallback()
     const auto info = proc.getVariationInfo();
     const int currentVersion = proc.getSampleVersion();
 
-    if (currentVersion != lastVersion || drum != lastDrum)
+    if (currentVersion != lastVersion || mode != lastMode)
     {
         lastVersion = currentVersion;
-        lastDrum = drum;
+        lastMode = mode;
+
+        std::vector<int> markers;
+
+        if (multi && info.size() > 1)
+            for (const auto& v : info)
+                if (v.pitched)
+                    markers.push_back (juce::roundToInt (v.root));
+
+        keyboard.setRootMarkers (markers);
         const bool has = selected < (int) info.size();
         wave.setData (has ? info[(size_t) selected].peaks : std::vector<float>(), has ? info[(size_t) selected].seconds : 0.0);
         keyboard.repaint();
@@ -1018,7 +1056,7 @@ void MainView::timerCallback()
         }
 
         tiles[i].setData (i, available ? info[(size_t) i].peaks : std::vector<float>(), note,
-                          available && i == selected && ! drum, available, working, drum);
+                          available && i == selected && mode == 0, available, working, drum || multi);
     }
 
     // --- Bilgi ekranı ---
@@ -1040,6 +1078,19 @@ void MainView::timerCallback()
     {
         if (drum)
             rightText = tr ("DAVUL · ") + juce::String ((int) juce::jmin ((size_t) 4, info.size())) + tr (" SES");
+        else if (multi && info.size() > 1)
+        {
+            double lo = 1000.0, hi = -1000.0;
+            int count = 0;
+
+            for (const auto& v : info)
+                if (v.pitched) { lo = juce::jmin (lo, v.root); hi = juce::jmax (hi, v.root); ++count; }
+
+            rightText = tr ("ÇOKLU · ") + juce::String (count) + tr (" KAYIT");
+
+            if (count > 0)
+                rightText << " · " << widi::noteName (juce::roundToInt (lo)) << juce::String::fromUTF8 ("–") << widi::noteName (juce::roundToInt (hi));
+        }
         else if (selected < (int) info.size())
         {
             const auto& v = info[(size_t) selected];
@@ -1048,7 +1099,7 @@ void MainView::timerCallback()
         }
     }
 
-    lcd.setText (trimText (left, 64), rightText, isError);
+    lcd.setText (trimText (left, 44), rightText, isError);
     seedBox.setText (tr ("SEED  ") + juce::String (proc.getBaseSeed()), proc.isSeedLocked() ? tr ("kilitli") : juce::String(), false);
     lockButton.setToggleState (proc.isSeedLocked(), juce::dontSendNotification);
 

@@ -79,6 +79,8 @@ public:
     void selectVariation (int index);
     int getSampleVersion() const { return sampleVersion.load(); }
     bool isDrumMode() const;
+    bool isMultiMode() const;
+    void previewVariation (int index);
 
     // --- Dışa aktarma ve kütüphane ---
     juce::File exportSelectedToWav();

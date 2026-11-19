@@ -6,10 +6,29 @@ using widi::tr;
 
 namespace
 {
-    const char* cloudSuffixMelodic = ", single isolated note, one shot, clean, no background noise";
+    const char* cloudSuffixMelodic = ", single isolated note, no background noise";
     const char* cloudSuffixDrum    = ", single drum hit, one shot, percussive, dry, no background noise";
-    const char* localSuffixMelodic = ", single note, one shot, clean";
+    const char* localSuffixMelodic = ", single note";
     const char* localSuffixDrum    = ", single drum hit, one shot, percussive, dry";
+
+    // Çoklu örnek: her kayıt farklı bir registerda (kalından inceye)
+    const char* registerSuffixes[4] = { ", low register, low pitched note", ", lower middle register",
+                                        ", upper middle register", ", high register, high pitched note" };
+
+    std::vector<juce::String> registersFor (int count)
+    {
+        std::vector<juce::String> list;
+
+        for (int i = 0; i < count; ++i)
+        {
+            const int index = count <= 1 ? 1 : juce::roundToInt ((double) i * 3.0 / (double) (count - 1));
+            list.push_back (registerSuffixes[juce::jlimit (0, 3, index)]);
+        }
+
+        return list;
+    }
+
+    struct Translation { juce::String text, realism; };
 
     juce::PropertiesFile::Options settingsOptions()
     {
@@ -44,14 +63,15 @@ namespace
         return true;
     }
 
-    juce::String translateViaEngine (const juce::String& text)
+    Translation translateViaEngine (const juce::String& text, bool drum)
     {
         if (text.trim().isEmpty())
-            return text;
+            return { text, {} };
 
         auto* obj = new juce::DynamicObject();
         juce::var body (obj);
         obj->setProperty ("text", text);
+        obj->setProperty ("drum", drum);
 
         juce::MemoryBlock response;
         int statusCode = 0;
@@ -59,13 +79,14 @@ namespace
         if (httpPost (engineUrl ("/translate"), juce::JSON::toString (body, true),
                       "Content-Type: application/json", 60000, response, statusCode) && statusCode == 200)
         {
-            const auto translated = juce::JSON::parse (response.toString()).getProperty ("text", {}).toString();
+            const auto parsed = juce::JSON::parse (response.toString());
+            const auto translated = parsed.getProperty ("text", {}).toString();
 
             if (translated.isNotEmpty())
-                return translated;
+                return { translated, parsed.getProperty ("realism", {}).toString() };
         }
 
-        return text;
+        return { text, {} };
     }
 
     juce::String safeFileName (const juce::String& name)
@@ -192,6 +213,7 @@ public:
         juce::String prompt, negative;
         Engine engine = Engine::local;
         bool drum = false;
+        std::vector<juce::String> registers;   // çoklu örnekte kayıt başına ek
         float seconds = 3.0f;
         int steps = 8;
         float strength = 0.0f;
@@ -253,6 +275,17 @@ private:
         obj->setProperty ("prompt", request.prompt);
         obj->setProperty ("negative", request.negative);
         obj->setProperty ("suffix", juce::String (request.drum ? localSuffixDrum : localSuffixMelodic));
+        obj->setProperty ("drum", request.drum);
+
+        if (! request.registers.empty())
+        {
+            juce::Array<juce::var> suffixList;
+
+            for (const auto& r : request.registers)
+                suffixList.add (r);
+
+            obj->setProperty ("suffixes", suffixList);
+        }
         obj->setProperty ("seconds", (double) request.seconds);
         obj->setProperty ("steps", request.steps);
         obj->setProperty ("cfg", 1.0 + (double) request.strength * 2.0);
@@ -321,20 +354,21 @@ private:
         }
 
         // Türkçe tarifi gizlice İngilizceye çevir (motor açıksa)
-        auto englishPrompt = request.prompt;
+        Translation prompt { request.prompt, {} };
         auto englishNegative = request.negative;
 
         if (owner.isEngineOnline())
         {
             owner.setStatus (Status::working, tr ("Tarif hazırlanıyor…"));
-            englishPrompt = translateViaEngine (request.prompt);
-            englishNegative = translateViaEngine (request.negative);
+            prompt = translateViaEngine (request.prompt, request.drum);
+            englishNegative = translateViaEngine (request.negative, request.drum).text;
         }
 
-        auto text = englishPrompt + (request.drum ? cloudSuffixDrum : cloudSuffixMelodic);
+        const auto baseText = prompt.text + prompt.realism + (request.drum ? cloudSuffixDrum : cloudSuffixMelodic);
+        juce::String without;
 
         if (englishNegative.trim().isNotEmpty())
-            text << ", without " << englishNegative.trim();
+            without << ", without " << englishNegative.trim();
 
         const int count = (int) request.seeds.size();
 
@@ -347,7 +381,8 @@ private:
 
             auto* obj = new juce::DynamicObject();
             juce::var body (obj);
-            obj->setProperty ("text", text);
+            const auto reg = i < (int) request.registers.size() ? request.registers[(size_t) i] : juce::String();
+            obj->setProperty ("text", baseText + reg + without);
             obj->setProperty ("duration_seconds", (double) request.seconds);
             obj->setProperty ("prompt_influence", 0.3 + 0.7 * (double) request.strength);
 
@@ -414,6 +449,10 @@ WidiKeyProcessor::WidiKeyProcessor()
     baseSeed = juce::Random::getSystemRandom().nextInt ({ 1000, 9999 });
     apvts.addParameterListener ("mode", this);
 
+    // Yeni açılan plugin Çoklu örnek modunda başlar (eski projeler kendi modunda açılır)
+    if (auto* modeParam = apvts.getParameter ("mode"))
+        modeParam->setValueNotifyingHost (modeParam->convertTo0to1 (2.0f));
+
     monitor = std::make_unique<EngineMonitor> (*this);
     monitor->startThread();
 }
@@ -463,7 +502,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout WidiKeyProcessor::createLayo
     layout.add (std::make_unique<IntParam> (juce::ParameterID { "variations", 1 }, "Varyasyon", 1, maxVariations, 4));
 
     // v0.3 yenileri
-    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "mode", 1 }, "Mod", juce::StringArray { "Melodik", "Davul" }, 0));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "mode", 1 }, "Mod", juce::StringArray { "Melodik", "Davul", tr ("Çoklu") }, 0));
     layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "loop", 1 }, tr ("Döngü"), false));
     layout.add (std::make_unique<Param> (juce::ParameterID { "velocity", 1 },   "Velocity",       juce::NormalisableRange<float> (0.0f, 1.0f), 0.3f, Attr().withStringFromValueFunction (formatPercent)));
     layout.add (std::make_unique<Param> (juce::ParameterID { "glide", 1 },      "Glide",          timeRange (0.0f, 1.0f), 0.0f, Attr().withStringFromValueFunction (formatSeconds)));
@@ -543,7 +582,35 @@ void WidiKeyProcessor::handleAsyncUpdate()
 
 bool WidiKeyProcessor::isDrumMode() const
 {
-    return apvts.getRawParameterValue ("mode")->load() > 0.5f;
+    return juce::roundToInt (apvts.getRawParameterValue ("mode")->load()) == 1;
+}
+
+bool WidiKeyProcessor::isMultiMode() const
+{
+    return juce::roundToInt (apvts.getRawParameterValue ("mode")->load()) == 2;
+}
+
+void WidiKeyProcessor::previewVariation (int index)
+{
+    int note = 60;
+
+    {
+        const juce::ScopedLock sl (dataLock);
+
+        if (index < 0 || index >= (int) variations.size())
+            return;
+
+        const auto& v = variations[(size_t) index];
+
+        if (isDrumMode())
+            note = 60 + widi::drumNoteClasses[juce::jlimit (0, 3, index)];
+        else if (v.pitch.pitched)
+            note = juce::jlimit (0, 127, juce::roundToInt (v.pitch.midi));
+    }
+
+    keyboardState.noteOn (1, note, 0.85f);
+    auto* state = &keyboardState;
+    juce::Timer::callAfterDelay (700, [state, note] { state->noteOff (1, note, 0.0f); });
 }
 
 //==============================================================================
@@ -594,6 +661,9 @@ void WidiKeyProcessor::startGeneration (const juce::String& prompt, const juce::
 
     for (int i = 0; i < count; ++i)
         request.seeds.push_back (baseSeed.load() + i * 1009);
+
+    if (isMultiMode() && count > 1)
+        request.registers = registersFor (count);
 
     setStatus (Status::working, tr ("Hazırlanıyor…"));
 
@@ -722,6 +792,47 @@ void WidiKeyProcessor::rebuildSounds()
 
                 const auto& v = variations[i];
                 sounds.push_back (new widi::WidiSound (v.audio, v.sourceRate, 60.0, notes, true));
+            }
+        }
+        else if (isMultiMode() && variations.size() > 1)
+        {
+            // Çoklu örnek: her tuş, kök notası kendisine en yakın kaydı çalar
+            std::vector<size_t> pitched;
+
+            for (size_t i = 0; i < variations.size(); ++i)
+                if (variations[i].pitch.pitched)
+                    pitched.push_back (i);
+
+            if (pitched.empty() && selected >= 0 && selected < (int) variations.size())
+                pitched.push_back ((size_t) selected);
+
+            std::vector<juce::BigInteger> zones (pitched.size());
+
+            for (int n = 0; n < 128; ++n)
+            {
+                size_t best = 0;
+                double bestDistance = 1.0e9;
+
+                for (size_t z = 0; z < pitched.size(); ++z)
+                {
+                    const auto& v = variations[pitched[z]];
+                    const double root = v.pitch.pitched ? v.pitch.midi : 60.0;
+                    const double distance = std::abs (n - root);
+
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        best = z;
+                    }
+                }
+
+                zones[best].setBit (n);
+            }
+
+            for (size_t z = 0; z < pitched.size(); ++z)
+            {
+                const auto& v = variations[pitched[z]];
+                sounds.push_back (new widi::WidiSound (v.audio, v.sourceRate, v.pitch.pitched ? v.pitch.midi : 60.0, zones[z], false));
             }
         }
         else if (selected >= 0 && selected < (int) variations.size())
@@ -956,7 +1067,15 @@ void WidiKeyProcessor::setStateInformation (const void* data, int sizeInBytes)
     auto params = root.getChildWithName (apvts.state.getType());
 
     if (params.isValid())
+    {
+        const bool hasMode = params.getChildWithProperty ("id", "mode").isValid();
         apvts.replaceState (params);
+
+        // Mod kaydı olmayan eski (v0.2) projeler eskisi gibi Melodik açılsın
+        if (! hasMode)
+            if (auto* modeParam = apvts.getParameter ("mode"))
+                modeParam->setValueNotifyingHost (0.0f);
+    }
 
     engine = root["engine"].toString() == "cloud" ? Engine::cloud : Engine::local;
     seedLocked = (bool) root.getProperty ("seedLocked", false);
